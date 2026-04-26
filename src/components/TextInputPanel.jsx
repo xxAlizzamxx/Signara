@@ -1,36 +1,30 @@
-import { useEffect, useRef, useState } from 'react'
+import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react'
 import useVoiceInput from '../hooks/useVoiceInput.js'
 
 /**
- * TextInputPanel
- * Combined text + microphone input with TWO emission flows:
+ * TextInputPanel  (forwardRef)
  *
- *   1. TYPED:    user writes -> presses Traducir -> onSubmit(text)
+ * Two emission flows:
+ *   1. TYPED:  user writes -> Traducir -> onSubmit(text)
  *   2. STREAMING VOICE:
- *        - On every interim transcript update, detect newly-completed words
- *          and emit them via onLiveWord(word). The avatar starts playing
- *          immediately, word by word.
- *        - When the recognizer finalises a phrase, onSubmit(text) ALSO fires
- *          so the parent can run translateText() for full-sentence polish.
- *        - The mic stays on continuously until the user toggles it off.
+ *        - interim transcript -> emit each newly-completed word via onLiveWord
+ *        - final phrase       -> onSubmit(text) for translateText() polish
+ *
+ * Imperative API (via ref):
+ *   - clear()  : stop the mic if active, empty input, reset word tracker
  */
-export default function TextInputPanel({
-  initialMode = 'text',
-  onSubmit,
-  onLiveWord,
-  busy = false
-}) {
+const TextInputPanel = forwardRef(function TextInputPanel(
+  { initialMode = 'text', onSubmit, onLiveWord, busy = false },
+  ref
+) {
   const [value, setValue] = useState('')
   const inputRef = useRef(null)
 
-  // Latest callbacks - read inside hook handlers without re-creating recog.
   const onSubmitRef = useRef(onSubmit)
   const onLiveWordRef = useRef(onLiveWord)
   onSubmitRef.current = onSubmit
   onLiveWordRef.current = onLiveWord
 
-  // Word-level tracker: which complete words have we already emitted for the
-  // current interim phrase? Reset on every finalize.
   const liveEmittedRef = useRef([])
 
   function emitNewWords(allWords) {
@@ -49,12 +43,9 @@ export default function TextInputPanel({
     setValue(cleaned)
     const words = cleaned.split(/\s+/).filter(Boolean)
     if (isFinal) {
-      // Every word in the final phrase is now complete
       emitNewWords(words)
-      // Reset for the next interim phrase
       liveEmittedRef.current = []
     } else {
-      // Last word is still being spoken - only emit the previous complete ones
       const completeWords = words.slice(0, -1)
       emitNewWords(completeWords)
     }
@@ -65,12 +56,31 @@ export default function TextInputPanel({
     continuous: true,
     onLiveTranscript: handleLive,
     onResult: (text) => {
-      // Final phrase - send to translateText() for the polished display
       if (!text) return
       console.log('[TextInputPanel] final:', text)
       if (onSubmitRef.current) onSubmitRef.current(text)
     }
   })
+
+  // Keep latest listening/stop accessible inside imperative handle without
+  // recreating the handle every render.
+  const listeningRef = useRef(listening)
+  const stopRef = useRef(stop)
+  listeningRef.current = listening
+  stopRef.current = stop
+
+  useImperativeHandle(ref, () => ({
+    clear: () => {
+      console.log('[TextInputPanel] clear()')
+      if (listeningRef.current) {
+        try { stopRef.current() } catch (_) {}
+      }
+      setValue('')
+      liveEmittedRef.current = []
+    },
+    isListening: () => listeningRef.current,
+    stopMic: () => { if (listeningRef.current) stopRef.current() }
+  }))
 
   useEffect(() => {
     if (initialMode === 'voice' && supported && !listening) {
@@ -186,7 +196,9 @@ export default function TextInputPanel({
       </div>
     </form>
   )
-}
+})
+
+export default TextInputPanel
 
 function Spinner() {
   return (

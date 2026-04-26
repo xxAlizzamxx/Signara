@@ -9,31 +9,55 @@ import { getSignSrc, normalizeSign } from '../utils/signMap.js'
 /**
  * TranslationScreen
  *
- * Two coexisting playback paths:
- *   - TYPED:  user submits text -> translateText() -> avatarRef.replace(signs)
- *   - VOZ EN VIVO:
- *       1. Each new spoken word fires onLiveWord(word) -> we try to queue
- *          it directly to the avatar (single-word match in signMap).
- *       2. When the phrase finalises, translateText(text) runs and:
- *            a) replaces the chips with the polished sentence translation
- *            b) queues any polished sign that was NOT already streamed live
- *               (multi-word phrases like "como estas" -> "COMO_ESTAS",
- *               sentence rewrites like "necesito ayuda" -> "YO NECESITAR AYUDA")
+ * Coexisting playback paths:
+ *   TYPED:  user submits text -> translateText() -> avatarRef.replace(signs)
+ *   VOZ EN VIVO:
+ *     interim word -> avatarRef.queue(word) (instant)
+ *     final phrase -> translateText() polish + diff-queue any missing signs
  *
- *       This way every phrase plays SOMETHING - even "como estas" by itself
- *       (which has no individual word videos) gets caught by the polish step.
+ * Includes a global "Limpiar" button that resets:
+ *   - avatar (clear queue, stop video, hide both buffers)
+ *   - voice  (stop mic, clear input, reset word tracker)
+ *   - state  (chips, original text, active sign, busy, liveMode)
  */
 export default function TranslationScreen({ initialMode = 'text', onBack, onHome }) {
   const [originalText, setOriginalText] = useState('')
-  const [signs, setSigns] = useState([])         // chips display
+  const [signs, setSigns] = useState([])
   const [activeSign, setActiveSign] = useState(null)
   const [busy, setBusy] = useState(false)
   const [liveMode, setLiveMode] = useState(false)
 
   const avatarRef = useRef(null)
-  // Track the signs we successfully queued from live-streaming for the
-  // CURRENT phrase. Reset when the phrase finalises (after polish runs).
+  const inputRef = useRef(null)
   const liveQueuedRef = useRef([])
+
+  // --- Reset helpers --------------------------------------------------------
+  const resetVoice = useCallback(() => {
+    if (inputRef.current) inputRef.current.clear()
+  }, [])
+
+  const resetAvatar = useCallback(() => {
+    if (avatarRef.current) avatarRef.current.clear()
+  }, [])
+
+  const resetState = useCallback(() => {
+    setOriginalText('')
+    setSigns([])
+    setActiveSign(null)
+    setBusy(false)
+    setLiveMode(false)
+    liveQueuedRef.current = []
+  }, [])
+
+  const handleReset = useCallback(() => {
+    console.log('[TranslationScreen] handleReset()')
+    resetVoice()
+    resetAvatar()
+    resetState()
+    if (typeof window !== 'undefined' && window.speechSynthesis) {
+      window.speechSynthesis.cancel()
+    }
+  }, [resetVoice, resetAvatar, resetState])
 
   // --- TYPED path -----------------------------------------------------------
   const handleSubmit = useCallback(async (text) => {
@@ -62,39 +86,19 @@ export default function TranslationScreen({ initialMode = 'text', onBack, onHome
     setSigns((prev) => [...prev, sign])
     setOriginalText((prev) => (prev ? prev + ' ' : '') + rawWord)
 
-    // Only queue if we have a video for this exact sign. Track what we
-    // streamed so we can diff against the polished translation later.
     if (getSignSrc(sign) && avatarRef.current) {
       avatarRef.current.queue(sign)
       liveQueuedRef.current.push(sign)
-      console.log('[TranslationScreen] live-queued:', sign,
-        ' so far:', liveQueuedRef.current)
-    } else {
-      console.log('[TranslationScreen] live word', sign, 'has no direct video, waiting for polish')
     }
   }, [])
 
-  // Final phrase from voice -> run translateText for full-sentence correction,
-  // update chips, and queue any signs the live stream missed.
   const handleVoiceFinal = useCallback(async (text) => {
     if (!text) return
-    console.log('[TranslationScreen] voice final, polishing:', text)
     try {
       const polished = await translateText(text)
       if (!polished || polished.length === 0) return
-
-      console.log('[TranslationScreen] polished ->', polished,
-        ' liveQueued ->', liveQueuedRef.current)
-
-      // Replace chips with the polished version
       setSigns(polished)
 
-      // Diff: for each polished sign, if it was already queued live (one
-      // occurrence), consume it; otherwise queue it now. This catches:
-      //  - "como estas" -> no live words queued -> queue COMO_ESTAS
-      //  - "hola como estas" -> HOLA queued live -> queue COMO_ESTAS only
-      //  - "necesito ayuda" -> AYUDA queued live (NECESITO skipped) ->
-      //                         queue YO + NECESITAR
       const liveLeft = [...liveQueuedRef.current]
       for (const sign of polished) {
         const idx = liveLeft.indexOf(sign)
@@ -102,27 +106,20 @@ export default function TranslationScreen({ initialMode = 'text', onBack, onHome
           liveLeft.splice(idx, 1)
           continue
         }
-        if (avatarRef.current) {
-          console.log('[TranslationScreen] polish-queue:', sign)
-          avatarRef.current.queue(sign)
-        }
+        if (avatarRef.current) avatarRef.current.queue(sign)
       }
     } catch (e) {
       console.warn('polish translateText failed:', e)
     } finally {
-      // Reset live tracking for the next phrase
       liveQueuedRef.current = []
     }
   }, [])
 
-  // The TextInputPanel uses the same onSubmit prop for both flows; we
-  // dispatch by whether we're in live mode.
   const handlePanelSubmit = useCallback((text) => {
     if (liveMode) handleVoiceFinal(text)
     else handleSubmit(text)
   }, [liveMode, handleVoiceFinal, handleSubmit])
 
-  // Active chip - LAST occurrence of activeSign so duplicates work
   let activeIndex = -1
   if (activeSign) {
     for (let i = signs.length - 1; i >= 0; i--) {
@@ -139,16 +136,21 @@ export default function TranslationScreen({ initialMode = 'text', onBack, onHome
           </svg>
           Cambiar modo
         </button>
-        <button onClick={onHome} className="flex items-center gap-2 group" title="Inicio">
-          <span className="hidden sm:block text-xl font-extrabold gradient-text bg-white px-3 py-1 rounded-full shadow-soft">Signara</span>
-          <span className="flex h-10 w-10 items-center justify-center rounded-2xl bg-white/95 shadow-soft group-hover:shadow-glow transition">
-            <Logo size={28} />
-          </span>
-        </button>
+
+        <div className="flex items-center gap-2">
+          <ResetButton onClick={handleReset} />
+          <button onClick={onHome} className="flex items-center gap-2 group" title="Inicio">
+            <span className="hidden sm:block text-xl font-extrabold gradient-text bg-white px-3 py-1 rounded-full shadow-soft">Signara</span>
+            <span className="flex h-10 w-10 items-center justify-center rounded-2xl bg-white/95 shadow-soft group-hover:shadow-glow transition">
+              <Logo size={28} />
+            </span>
+          </button>
+        </div>
       </header>
 
       <div className="animate-fade-up">
         <TextInputPanel
+          ref={inputRef}
           initialMode={initialMode}
           onSubmit={handlePanelSubmit}
           onLiveWord={handleLiveWord}
@@ -183,5 +185,25 @@ export default function TranslationScreen({ initialMode = 'text', onBack, onHome
         MVP - Streaming en tiempo real con datos simulados.
       </footer>
     </section>
+  )
+}
+
+/**
+ * ResetButton - shared "LIMPIAR" pill, prominent enough to spot but tucked
+ * to the right side of the header so it never competes with the primary CTA.
+ */
+function ResetButton({ onClick }) {
+  return (
+    <button
+      onClick={onClick}
+      className="inline-flex items-center gap-1.5 px-4 py-2 rounded-full bg-white/15 hover:bg-white/25 border border-white/30 text-white text-sm font-semibold transition focus:outline-none focus:ring-2 focus:ring-white/40"
+      title="Reiniciar todo"
+    >
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M3 12a9 9 0 1 0 3-6.7L3 8" />
+        <path d="M3 3v5h5" />
+      </svg>
+      LIMPIAR
+    </button>
   )
 }
