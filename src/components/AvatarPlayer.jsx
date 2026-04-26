@@ -145,12 +145,16 @@ const AvatarPlayer = forwardRef(function AvatarPlayer(
       if (onSign) onSign(sign)
     }
 
-    next.onerror = () => {
+    next.onerror = (e) => {
+      // Production diagnostics - shows the exact URL that failed (helps
+      // spot Vercel case-sensitivity issues, missing assets, etc.)
+      console.error('VIDEO ERROR:', next.src, 'sign:', sign,
+        'mediaError:', next.error && next.error.code, e)
       // Try the underscore<->space variant once before skipping
       if (!triedFallbackRef.current) {
         const alt = altUrl(src)
         if (alt && alt !== src) {
-          console.warn('Preload error, retrying with alt URL:', alt)
+          console.warn('Retrying with alt URL:', alt)
           triedFallbackRef.current = true
           preloadAndSwap(sign, alt)
           return
@@ -161,6 +165,7 @@ const AvatarPlayer = forwardRef(function AvatarPlayer(
       setTimeout(playNext, 100)
     }
 
+    console.log('Playing:', src)
     next.src = src
     next.load()
   }
