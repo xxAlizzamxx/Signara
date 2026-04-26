@@ -1,203 +1,325 @@
-import { useEffect, useRef, useState } from 'react'
+import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react'
 import { getSignSrc, normalizeSign } from '../utils/signMap.js'
 
 /**
  * AvatarPlayer
- * Plays a sequence of sign-language video clips one after another.
  *
- *   - Renders a single <video ref={videoRef}> bound to the current sign URL.
- *   - On each new sign we explicitly call play() (with muted + playsInline so
- *     browsers allow autoplay).
- *   - Advances on the real `ended` event - we only fall back to a timer if
- *     the sign has no mapped video, or the video errors / autoplay rejects.
- *   - Surfaces the active index to the parent via onIndexChange so chips
- *     highlight in real time with the actual playback.
+ * Queue-based sign-language video player with DOUBLE-BUFFERED video.
+ *
+ * Two <video> elements are stacked (A and B). At any moment one is "active"
+ * (visible, opacity 1) and the other is "buffered" (hidden, opacity 0).
+ *
+ *   playNext() -> picks the next sign, loads its mp4 into the BUFFER element,
+ *                 waits for `canplay`, then plays it AND crossfades the
+ *                 active/buffer opacities. After the swap, the previous
+ *                 active element becomes the new buffer for the sign after.
+ *
+ * This eliminates the black frame / flicker the single-<video> approach
+ * shows when changing `src`, because the next clip is already decoded by
+ * the time we make it visible.
+ *
+ * Public API (forwardRef):
+ *   queue(sign), replace(signs), clear(), isPlaying(), queueLength()
  */
-export default function AvatarPlayer({
-  signs = [],
-  autoPlay = true,
-  onFinish,
-  onIndexChange
-}) {
-  const videoRef = useRef(null)
-  const fallbackTimerRef = useRef(null)
-  const [index, setIndex] = useState(0)
-  const [playing, setPlaying] = useState(false)
-  const [videoReady, setVideoReady] = useState(false)
+const AvatarPlayer = forwardRef(function AvatarPlayer(
+  { signs = [], onSign, onFinish },
+  ref
+) {
+  // Two persistent <video> elements
+  const videoARef = useRef(null)
+  const videoBRef = useRef(null)
+  // Which one is currently visible: 'A' or 'B'
+  const activeRef = useRef('A')
 
-  const currentSign = signs[index]
-  const currentSrc = currentSign ? getSignSrc(currentSign) : null
+  // Queue logic
+  const queueRef = useRef([])
+  const isPlayingRef = useRef(false)
+  const lastSignsRef = useRef([])
 
-  // Restart sequence when input changes
-  useEffect(() => {
-    clearTimeout(fallbackTimerRef.current)
-    setIndex(0)
-    setVideoReady(false)
-    setPlaying(autoPlay && signs.length > 0)
-  }, [signs, autoPlay])
+  // Per-sign retry guard for the underscore<->space filename fallback
+  const triedFallbackRef = useRef(false)
 
-  // Tell the parent which chip is active
-  useEffect(() => {
-    if (onIndexChange) onIndexChange(playing ? index : -1)
-  }, [index, playing, onIndexChange])
+  // UI state
+  const [currentLabel, setCurrentLabel] = useState(null)
+  const [isPlaying, setIsPlaying] = useState(false)
+  const [queueLen, setQueueLen] = useState(0)
+  const [hasShownAny, setHasShownAny] = useState(false)
 
-  // Per-sign effect: try to play the real video, fall back to timer if needed
-  useEffect(() => {
-    setVideoReady(false)
-    if (!playing) return
+  // -------- helpers --------------------------------------------------------
+  function getActiveVideo() {
+    return activeRef.current === 'A' ? videoARef.current : videoBRef.current
+  }
+  function getNextVideo() {
+    return activeRef.current === 'A' ? videoBRef.current : videoARef.current
+  }
+  function toggleActive() {
+    activeRef.current = activeRef.current === 'A' ? 'B' : 'A'
+  }
+  function setPlaying(v) {
+    isPlayingRef.current = v
+    setIsPlaying(v)
+  }
+  function refreshQueueLen() {
+    setQueueLen(queueRef.current.length)
+  }
+  function altUrl(src) {
+    if (!src) return null
+    if (src.includes('%20')) return src.replace(/%20/g, '_')
+    if (src.includes(' '))   return src.replace(/ /g, '_')
+    if (src.includes('_'))   return src.replace(/_/g, '%20')
+    return null
+  }
+  function clearVideoListeners(v) {
+    if (!v) return
+    v.oncanplay = null
+    v.onerror = null
+  }
 
-    if (index >= signs.length) {
+  // -------- core playback --------------------------------------------------
+  function playNext() {
+    refreshQueueLen()
+    if (queueRef.current.length === 0) {
+      console.log('QUEUE: empty - stopping')
       setPlaying(false)
+      setCurrentLabel(null)
       if (onFinish) onFinish()
       return
     }
-
-    const sign = signs[index]
-    const src = sign ? getSignSrc(sign) : null
-
-    console.log('Playing sign:', sign)
-    console.log('Video src:', src)
-
-    clearTimeout(fallbackTimerRef.current)
+    const sign = queueRef.current.shift()
+    refreshQueueLen()
+    const src = getSignSrc(sign)
+    console.log('QUEUE:', queueRef.current)
+    console.log('Playing sign:', sign, 'src:', src)
 
     if (!src) {
-      fallbackTimerRef.current = setTimeout(function () {
-        setIndex(function (i) { return i + 1 })
-      }, 1400)
+      // No video for this sign - skip to the next entry
+      setTimeout(playNext, 50)
       return
     }
 
-    const video = videoRef.current
-    if (video) {
-      video.muted = true
-      const p = video.play()
-      if (p && typeof p.catch === 'function') {
-        p.catch(function (err) {
-          console.warn('Initial play() rejected, will retry on loadeddata:', err)
-        })
-      }
-    }
-
-    return function () { clearTimeout(fallbackTimerRef.current) }
-  }, [playing, index, signs, onFinish])
-
-  function handleEnded() {
-    console.log('Video ended:', currentSign)
-    setIndex(function (i) { return i + 1 })
-  }
-
-  function handleLoadedData() {
-    console.log('Video loaded:', currentSrc)
-    setVideoReady(true)
-    const v = videoRef.current
-    if (!v) return
-    v.muted = true
-    const p = v.play()
-    if (p && typeof p.catch === 'function') {
-      p.catch(function (err) {
-        console.warn('play() after loadeddata rejected:', err)
-        clearTimeout(fallbackTimerRef.current)
-        fallbackTimerRef.current = setTimeout(function () {
-          setIndex(function (i) { return i + 1 })
-        }, 2000)
-      })
-    }
-  }
-
-  function handleError(e) {
-    console.warn('Video error for', currentSrc, e)
-    setVideoReady(false)
-    clearTimeout(fallbackTimerRef.current)
-    fallbackTimerRef.current = setTimeout(function () {
-      setIndex(function (i) { return i + 1 })
-    }, 1400)
-  }
-
-  function replay() {
-    setIndex(0)
-    setVideoReady(false)
     setPlaying(true)
+    triedFallbackRef.current = false
+    preloadAndSwap(sign, src)
   }
 
-  function togglePlay() {
-    if (!signs.length) return
-    if (playing) {
-      if (videoRef.current) videoRef.current.pause()
-      setPlaying(false)
-    } else {
-      setPlaying(true)
-      if (videoRef.current) {
-        const p = videoRef.current.play()
-        if (p && typeof p.catch === 'function') p.catch(function () {})
+  /**
+   * Load `src` into the inactive (buffer) <video>, wait for canplay, then
+   * play() it and crossfade opacities to swap which one is visible.
+   */
+  function preloadAndSwap(sign, src) {
+    const next = getNextVideo()
+    const active = getActiveVideo()
+    if (!next) return
+
+    console.log('Preloading:', src)
+
+    // Clean up any prior listeners on the buffer to avoid leaks / double-fires
+    clearVideoListeners(next)
+
+    next.muted = true
+    next.playsInline = true
+    next.preload = 'auto'
+
+    next.oncanplay = async () => {
+      // One-shot: detach so a buffered sign that becomes ready later
+      // doesn't accidentally re-fire.
+      clearVideoListeners(next)
+      console.log('Switching video to:', sign)
+
+      try {
+        await next.play()
+      } catch (err) {
+        console.warn('play() rejected for', sign, err)
       }
+
+      // Crossfade
+      next.style.opacity = '1'
+      if (active && active !== next) {
+        active.style.opacity = '0'
+        try { active.pause() } catch (_) {}
+      }
+
+      toggleActive()
+      setCurrentLabel(sign)
+      setHasShownAny(true)
+      if (onSign) onSign(sign)
     }
+
+    next.onerror = () => {
+      // Try the underscore<->space variant once before skipping
+      if (!triedFallbackRef.current) {
+        const alt = altUrl(src)
+        if (alt && alt !== src) {
+          console.warn('Preload error, retrying with alt URL:', alt)
+          triedFallbackRef.current = true
+          preloadAndSwap(sign, alt)
+          return
+        }
+      }
+      console.warn('Preload error for', sign, '- skipping')
+      clearVideoListeners(next)
+      setTimeout(playNext, 100)
+    }
+
+    next.src = src
+    next.load()
   }
+
+  // Fired when EITHER video reaches the natural end. Only react if it was
+  // the active one (the buffered one shouldn't be playing).
+  function handleVideoEnded(e) {
+    if (!isPlayingRef.current) return
+    const which = e.target === videoARef.current ? 'A' : 'B'
+    if (which !== activeRef.current) return  // ignore the (paused) buffer
+    console.log('Video ended:', currentLabel)
+    playNext()
+  }
+
+  // -------- imperative API -------------------------------------------------
+  function queueAnimation(rawSign) {
+    if (!rawSign) return
+    const sign = normalizeSign(rawSign)
+    const src = getSignSrc(sign)
+    if (!src) {
+      console.log('LIVE WORD:', sign, '-> no video, skipped')
+      return
+    }
+    queueRef.current.push(sign)
+    refreshQueueLen()
+    console.log('LIVE WORD:', sign, '-> queued')
+    console.log('QUEUE:', queueRef.current)
+    if (!isPlayingRef.current) playNext()
+  }
+
+  function clearQueue() {
+    queueRef.current = []
+    refreshQueueLen()
+    setPlaying(false)
+    setCurrentLabel(null)
+    // Hide both videos, pause both
+    for (const v of [videoARef.current, videoBRef.current]) {
+      if (!v) continue
+      try { v.pause() } catch (_) {}
+      v.style.opacity = '0'
+      clearVideoListeners(v)
+    }
+    setHasShownAny(false)
+  }
+
+  function replaceQueue(newSigns) {
+    queueRef.current = (newSigns || [])
+      .map(normalizeSign)
+      .filter((s) => Boolean(getSignSrc(s)))
+    refreshQueueLen()
+    setPlaying(false)
+    setCurrentLabel(null)
+    if (queueRef.current.length > 0) playNext()
+  }
+
+  useImperativeHandle(ref, () => ({
+    queue: queueAnimation,
+    clear: clearQueue,
+    replace: replaceQueue,
+    isPlaying: () => isPlayingRef.current,
+    queueLength: () => queueRef.current.length
+  }))
+
+  // Backward-compat: when `signs` prop changes (typed-text flow), replace queue.
+  useEffect(() => {
+    if (!signs) return
+    if (signs === lastSignsRef.current) return
+    const sameLength = signs.length === lastSignsRef.current.length
+    const same = sameLength && signs.every((s, i) => s === lastSignsRef.current[i])
+    if (same) return
+    lastSignsRef.current = signs
+    if (signs.length > 0) replaceQueue(signs)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [signs])
+
+  // On unmount: clean listeners
+  useEffect(() => {
+    return () => {
+      clearVideoListeners(videoARef.current)
+      clearVideoListeners(videoBRef.current)
+    }
+  }, [])
 
   return (
     <div className="relative w-full">
-      <div className="relative mx-auto aspect-[4/5] max-h-[58vh] w-full max-w-md rounded-4xl overflow-hidden shadow-glow bg-gradient-to-br from-signara-sky/40 via-white to-signara-lilac/40 border border-white/70">
-        {currentSrc ? (
-          <video
-            ref={videoRef}
-            key={index + '-' + currentSrc}
-            src={currentSrc}
-            autoPlay
-            muted
-            playsInline
-            preload="auto"
-            onEnded={handleEnded}
-            onLoadedData={handleLoadedData}
-            onError={handleError}
-            className={'absolute inset-0 h-full w-full object-cover transition-opacity duration-300 ' + (videoReady ? 'opacity-100' : 'opacity-0')}
-          />
-        ) : null}
+      <div className="relative mx-auto aspect-[4/5] max-h-[58vh] w-full max-w-md rounded-4xl overflow-hidden shadow-glow border border-white/30 bg-gradient-to-br from-signara-blue/20 via-signara-purple/15 to-signara-lilac/25 backdrop-blur-sm">
+        {/* DOUBLE-BUFFER: two stacked <video> elements that crossfade.
+            Initial inline opacity 0; we drive opacity imperatively from
+            preloadAndSwap() so React never re-applies stale styles. */}
+        <video
+          ref={videoARef}
+          muted
+          playsInline
+          preload="auto"
+          onEnded={handleVideoEnded}
+          className="absolute inset-0 h-full w-full object-cover transition-opacity duration-200 ease-out"
+          style={{ opacity: 0 }}
+        />
+        <video
+          ref={videoBRef}
+          muted
+          playsInline
+          preload="auto"
+          onEnded={handleVideoEnded}
+          className="absolute inset-0 h-full w-full object-cover transition-opacity duration-200 ease-out"
+          style={{ opacity: 0 }}
+        />
 
-        {!videoReady ? <FallbackAvatar sign={currentSign} active={playing} /> : null}
+        {/* Fallback avatar - underneath the videos. Hidden once we've
+            successfully crossfaded any clip in. */}
+        {!hasShownAny && <FallbackAvatar active={isPlaying} />}
 
-        {currentSign ? (
+        {/* Sign label */}
+        {currentLabel && (
           <div className="absolute bottom-4 left-1/2 -translate-x-1/2 px-5 py-2 rounded-full bg-white/90 backdrop-blur text-signara-navy font-bold tracking-wide shadow-soft text-sm">
-            {normalizeSign(currentSign).replace(/_/g, ' ')}
+            {normalizeSign(currentLabel).replace(/_/g, ' ')}
           </div>
-        ) : null}
+        )}
 
-        {signs.length > 0 ? (
-          <div className="absolute top-4 left-1/2 -translate-x-1/2 flex gap-1.5">
-            {signs.map(function (_, i) {
-              const cls = 'h-1.5 rounded-full transition-all duration-300 ' + (i < index ? 'w-3 bg-signara-purple' : i === index ? 'w-6 bg-signara-blue' : 'w-3 bg-white/70')
-              return <span key={i} className={cls} />
-            })}
+        {queueLen > 0 && (
+          <div className="absolute top-4 right-4 px-2.5 py-1 rounded-full bg-signara-text text-white text-[11px] font-bold shadow-soft">
+            +{queueLen} en cola
           </div>
-        ) : null}
+        )}
+
+        {isPlaying && (
+          <div className="absolute top-4 left-4 inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-black/40 backdrop-blur text-white text-[11px] font-bold">
+            <span className="h-1.5 w-1.5 rounded-full bg-red-400 animate-pulse" />
+            VIVO
+          </div>
+        )}
       </div>
 
       <div className="mt-5 flex items-center justify-center gap-3">
-        <button className="btn-ghost py-2 px-5 text-sm" onClick={replay} disabled={signs.length === 0}>
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M3 12a9 9 0 1 0 3-6.7L3 8" />
-            <path d="M3 3v5h5" />
-          </svg>
-          Repetir
-        </button>
-        <button className="btn-ghost py-2 px-5 text-sm" onClick={togglePlay} disabled={signs.length === 0}>
-          {playing ? 'Pausar' : 'Reproducir'}
+        <button
+          className="btn-ghost py-2 px-5 text-sm"
+          onClick={clearQueue}
+          disabled={!isPlaying && queueLen === 0}
+        >
+          Limpiar
         </button>
       </div>
     </div>
   )
-}
+})
 
-function FallbackAvatar({ sign, active }) {
+export default AvatarPlayer
+
+function FallbackAvatar({ active }) {
   const [imgFailed, setImgFailed] = useState(false)
   return (
-    <div className="absolute inset-0 flex flex-col items-center justify-center text-signara-navy">
+    <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
       <div className="relative flex items-center justify-center">
-        <div className={'absolute inset-0 rounded-full bg-signara-purple/20 ' + (active ? 'animate-pulse-ring' : '')} />
         {!imgFailed ? (
           <img
             src="/avatar.png"
             alt="Avatar Signara"
             onError={() => setImgFailed(true)}
-            className={'relative h-72 w-72 sm:h-80 sm:w-80 object-contain drop-shadow-xl ' + (active ? 'animate-float' : '')}
+            className={'relative h-72 w-72 sm:h-80 sm:w-80 object-contain drop-shadow-2xl ' + (active ? 'animate-float' : '')}
             draggable={false}
           />
         ) : (

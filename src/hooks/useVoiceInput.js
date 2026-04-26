@@ -2,28 +2,33 @@ import { useEffect, useRef, useState, useCallback } from 'react'
 
 /**
  * useVoiceInput
- * Thin wrapper around the Web Speech API (SpeechRecognition) tuned for
- * Spanish input. Exposes:
+ * Wrapper around the Web Speech API tuned for Spanish input.
  *
- *   - listening         : boolean
- *   - transcript        : current cumulative transcript
- *   - interim           : in-progress partial transcript
- *   - error             : last error (string) or null
- *   - supported         : whether the browser exposes SpeechRecognition
- *   - start(), stop()
+ * Two callbacks for the streaming use-case:
+ *   - onLiveTranscript(text)   fires continuously with the in-progress
+ *                              interim transcription. Used to drive the
+ *                              real-time word queue.
+ *   - onResult(text)           fires once per finalised utterance.
  *
- * Falls back gracefully on unsupported browsers (e.g. Firefox) by reporting
- * supported = false; the UI should swap to text input in that case.
+ * `continuous: true` keeps the recogniser open and re-arms on `onend`.
  */
-export default function useVoiceInput({ lang = 'es-ES', onResult } = {}) {
+export default function useVoiceInput({
+  lang = 'es-ES',
+  onResult,
+  onLiveTranscript,
+  continuous = true
+} = {}) {
   const [listening, setListening] = useState(false)
   const [transcript, setTranscript] = useState('')
   const [interim, setInterim] = useState('')
   const [error, setError] = useState(null)
 
   const recognitionRef = useRef(null)
+  const wantListenRef = useRef(false)
   const onResultRef = useRef(onResult)
+  const onLiveRef = useRef(onLiveTranscript)
   onResultRef.current = onResult
+  onLiveRef.current = onLiveTranscript
 
   const SR =
     typeof window !== 'undefined'
@@ -36,8 +41,9 @@ export default function useVoiceInput({ lang = 'es-ES', onResult } = {}) {
 
     const recognition = new SR()
     recognition.lang = lang
-    recognition.continuous = false
+    recognition.continuous = continuous
     recognition.interimResults = true
+    recognition.maxAlternatives = 1
 
     recognition.onresult = (event) => {
       let finalText = ''
@@ -47,45 +53,69 @@ export default function useVoiceInput({ lang = 'es-ES', onResult } = {}) {
         if (r.isFinal) finalText += r[0].transcript
         else interimText += r[0].transcript
       }
-      if (interimText) setInterim(interimText)
+
+      // Stream interim text continuously - drives the live queue.
+      if (interimText) {
+        setInterim(interimText)
+        if (onLiveRef.current) onLiveRef.current(interimText, false)
+      }
+
+      // Final phrase finalised - drives translateText() for polishing.
       if (finalText) {
-        setTranscript((prev) => (prev ? `${prev} ${finalText}` : finalText).trim())
+        const cleaned = finalText.trim()
+        setTranscript((prev) => (prev ? `${prev} ${cleaned}` : cleaned).trim())
         setInterim('')
-        if (onResultRef.current) onResultRef.current(finalText.trim())
+        if (onLiveRef.current) onLiveRef.current(cleaned, true)
+        if (onResultRef.current) onResultRef.current(cleaned)
       }
     }
 
     recognition.onerror = (e) => {
+      console.warn('[useVoiceInput] error:', e.error)
       setError(e.error || 'speech-error')
-      setListening(false)
+      if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
+        wantListenRef.current = false
+        setListening(false)
+      }
     }
-    recognition.onend = () => setListening(false)
+
+    recognition.onend = () => {
+      if (wantListenRef.current) {
+        try {
+          recognition.start()
+          setListening(true)
+        } catch (_) {
+          setListening(false)
+        }
+      } else {
+        setListening(false)
+      }
+    }
 
     recognitionRef.current = recognition
     return () => {
-      try {
-        recognition.abort()
-      } catch (_) {}
+      wantListenRef.current = false
+      try { recognition.abort() } catch (_) {}
     }
-  }, [SR, supported, lang])
+  }, [SR, supported, lang, continuous])
 
   const start = useCallback(() => {
     setError(null)
     setInterim('')
     if (!recognitionRef.current) return
+    wantListenRef.current = true
     try {
       recognitionRef.current.start()
       setListening(true)
-    } catch (e) {
-      // start() throws if already started — ignore.
+    } catch (_) {
+      // start() throws if already started - safe to ignore.
     }
   }, [])
 
   const stop = useCallback(() => {
+    wantListenRef.current = false
     if (!recognitionRef.current) return
-    try {
-      recognitionRef.current.stop()
-    } catch (_) {}
+    try { recognitionRef.current.stop() } catch (_) {}
     setListening(false)
   }, [])
 
