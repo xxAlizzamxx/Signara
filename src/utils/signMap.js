@@ -1,11 +1,11 @@
 /**
  * signMap
- * Mapping of canonical sign tokens (uppercase, no accents) to a video clip URL.
- * For the MVP these point to /videos/<sign>.mp4 — placeholder paths the team
- * will replace with real LSE / LSM clips later.
+ * Mapping of canonical sign tokens (uppercase, no accents) to a video URL.
+ * Paths stay relative to the site root - getSignSrc() resolves them to
+ * absolute URLs at call time so they work under any deployment.
  *
- * If a sign is missing from the map, AvatarPlayer falls back to a fingerspelling
- * placeholder so the demo never breaks.
+ * If a sign is missing from the map, AvatarPlayer falls back to a
+ * fingerspelling placeholder so the demo never breaks.
  */
 export const signMap = {
   HOLA: '/videos/hola.mp4',
@@ -45,7 +45,7 @@ export const signMap = {
 export function normalizeSign(word) {
   return String(word)
     .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[̀-ͯ]/g, '')
     .toUpperCase()
     .replace(/\s+/g, '_')
     .trim()
@@ -53,8 +53,19 @@ export function normalizeSign(word) {
 
 /**
  * getSignSrc
- * Returns the video URL for a sign, or null if unmapped (caller can fall back).
+ * Returns the absolute video URL for a sign, or null if unmapped.
+ *
+ * Resolves relative paths against window.location.origin so deployments
+ * at sub-paths (Vercel preview URLs, embedded iframes, etc.) still load
+ * the right asset.
  */
 export function getSignSrc(sign) {
-  return signMap[normalizeSign(sign)] || null
+  const path = signMap[normalizeSign(sign)]
+  if (!path) return null
+  try {
+    if (typeof window !== 'undefined' && window.location && window.location.origin) {
+      return new URL(path, window.location.origin).href
+    }
+  } catch (_) {}
+  return path
 }
