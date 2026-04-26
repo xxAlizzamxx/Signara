@@ -1,19 +1,21 @@
-import { useEffect, useRef, useState, useCallback } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import Logo from './Logo.jsx'
+import { detectGesture, HISTORY_LEN, COOLDOWN_MS } from '../utils/gestureDetect.js'
 
 /**
  * InterpretScreen
  *
- * Real-time hand-wave detection using MediaPipe Hands.
- * Detected gesture -> "HOLA"  (kept short, no full sentence)
+ * Real-time hand-gesture detection using MediaPipe Hands + simple
+ * geometric heuristics. Supports nine canonical signs:
+ *   HOLA, AYUDA, GRACIAS, YO, AGUA, COMIDA, NECESITO, DONDE, POR_FAVOR
  *
- * Includes a LIMPIAR button that resets:
- *   - latest detection (clear card)
- *   - history list
- *   - X-position ring buffer
- *   - cooldown timer
- *   - cancels any pending speech synthesis
- *   - DOES NOT stop the camera or hands solution
+ * Pipeline:
+ *   1. CDN-load @mediapipe/hands + camera_utils + drawing_utils
+ *   2. Camera streams frames through Hands (~30 fps)
+ *   3. On each frame we push wrist {x, y, z} into a rolling buffer
+ *      (HISTORY_LEN=18 -> ~600 ms)
+ *   4. detectGesture() runs every frame; first matching rule wins
+ *   5. 2-second cooldown between detections; buffer clears on each emit
  */
 
 const MEDIAPIPE_HANDS_VER = '0.4.1675469240'
@@ -25,10 +27,6 @@ const MP_SCRIPTS = [
   `https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@${MEDIAPIPE_CAM_VER}/camera_utils.js`,
   `https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils@${MEDIAPIPE_DRAW_VER}/drawing_utils.js`
 ]
-
-const HISTORY_LEN = 18
-const WAVE_THRESHOLD = 0.18
-const COOLDOWN_MS = 2000
 
 function loadScript(url) {
   return new Promise((resolve, reject) => {
@@ -43,6 +41,7 @@ function loadScript(url) {
     document.head.appendChild(s)
   })
 }
+
 async function loadMediaPipe() {
   for (const url of MP_SCRIPTS) await loadScript(url)
 }
@@ -53,8 +52,8 @@ export default function InterpretScreen({ onBack, onHome }) {
   const handsRef = useRef(null)
   const cameraRef = useRef(null)
 
-  // Refs that callbacks read - always up to date without re-subscribing
-  const xHistoryRef = useRef([])
+  // Rolling buffer of {x,y,z} wrist positions (latest at end)
+  const motionBufRef = useRef([])
   const lastDetectionRef = useRef(0)
   const runningRef = useRef(false)
   const audioRef = useRef(true)
@@ -72,7 +71,7 @@ export default function InterpretScreen({ onBack, onHome }) {
   useEffect(() => { runningRef.current = running }, [running])
   useEffect(() => { audioRef.current = audioOn }, [audioOn])
 
-  // ---- Load MediaPipe -----------------------------------------------------
+  // ---- Load MediaPipe scripts once -------------------------------------
   useEffect(() => {
     let cancelled = false
     loadMediaPipe()
@@ -84,7 +83,7 @@ export default function InterpretScreen({ onBack, onHome }) {
     return () => { cancelled = true }
   }, [])
 
-  // ---- Init Hands + Camera once scripts ready -----------------------------
+  // ---- Init Hands + Camera once scripts ready --------------------------
   useEffect(() => {
     if (!scriptsLoaded) return
     const HandsCtor = window.Hands
@@ -139,7 +138,7 @@ export default function InterpretScreen({ onBack, onHome }) {
     }
   }, [scriptsLoaded])
 
-  // ---- Per-frame -----------------------------------------------------------
+  // ---- Per-frame results ----------------------------------------------
   function handleResults(results) {
     const canvas = canvasRef.current
     const video = videoRef.current
@@ -156,7 +155,6 @@ export default function InterpretScreen({ onBack, onHome }) {
 
     if (has) {
       const landmarks = lms[0]
-
       if (window.drawConnectors && window.drawLandmarks && window.HAND_CONNECTIONS) {
         window.drawConnectors(ctx, landmarks, window.HAND_CONNECTIONS, {
           color: 'rgba(112,96,168,0.85)', lineWidth: 3
@@ -166,39 +164,30 @@ export default function InterpretScreen({ onBack, onHome }) {
         })
       }
 
-      const wristX = landmarks[0].x
-      const buf = xHistoryRef.current
-      buf.push(wristX)
+      // Push wrist {x,y,z} into the buffer
+      const w = landmarks[0]
+      const buf = motionBufRef.current
+      buf.push({ x: w.x, y: w.y, z: w.z })
       if (buf.length > HISTORY_LEN) buf.shift()
 
-      if (runningRef.current && buf.length >= 10) {
-        let mn = buf[0], mx = buf[0]
-        for (let i = 1; i < buf.length; i++) {
-          const v = buf[i]
-          if (v < mn) mn = v
-          if (v > mx) mx = v
-        }
-        const delta = mx - mn
+      // Run classifier - only when armed and cooldown elapsed
+      if (runningRef.current) {
         const now = Date.now()
-        if (delta > WAVE_THRESHOLD && now - lastDetectionRef.current > COOLDOWN_MS) {
-          // Cooldown stamp + buffer reset BEFORE emitting so we never re-fire
-          // on the same gesture even if the next frame still shows wide motion.
-          lastDetectionRef.current = now
-          xHistoryRef.current = []
-
-          const detection = {
-            sign: 'HOLA',
-            text: 'HOLA',
-            confidence: Math.min(0.99, 0.6 + delta)
+        if (now - lastDetectionRef.current > COOLDOWN_MS) {
+          const detection = detectGesture(buf)
+          if (detection) {
+            lastDetectionRef.current = now
+            motionBufRef.current = []           // reset so we don't refire
+            console.log('[InterpretScreen] gesture detected:', detection)
+            setLatest(detection)
+            setHistory((h) => [detection, ...h].slice(0, 8))
+            speak(detection.text)
           }
-          console.log('[InterpretScreen] WAVE detected, delta=', delta.toFixed(3))
-          setLatest(detection)
-          setHistory((h) => [detection, ...h].slice(0, 8))
-          speak(detection.text)
         }
       }
     } else {
-      xHistoryRef.current = []
+      // Hand left frame -> drop buffer to avoid cross-gesture leakage
+      motionBufRef.current = []
     }
 
     setHandVisible(has)
@@ -218,29 +207,32 @@ export default function InterpretScreen({ onBack, onHome }) {
     } catch (e) { console.warn(e) }
   }
 
+  // ---- Controls + reset ------------------------------------------------
   function startDetect() {
-    xHistoryRef.current = []
+    motionBufRef.current = []
     lastDetectionRef.current = 0
     setRunning(true)
   }
   function stopDetect() {
     setRunning(false)
-    if (typeof window !== 'undefined' && window.speechSynthesis) window.speechSynthesis.cancel()
+    if (window.speechSynthesis) window.speechSynthesis.cancel()
   }
 
-  // ---- LIMPIAR -------------------------------------------------------------
-  // Resets detection state, leaves the camera running.
-  const handleReset = useCallback(() => {
-    console.log('[InterpretScreen] handleReset()')
+  function resetCamera() {
+    console.log('[InterpretScreen] resetCamera()')
+    motionBufRef.current = []
+    lastDetectionRef.current = 0
     setLatest(null)
     setHistory([])
-    xHistoryRef.current = []
-    lastDetectionRef.current = 0
-    if (typeof window !== 'undefined' && window.speechSynthesis) {
-      window.speechSynthesis.cancel()
-    }
-    // camera + hands stay alive intentionally
-  }, [])
+    setHandVisible(false)
+    if (window.speechSynthesis) window.speechSynthesis.cancel()
+  }
+
+  function handleReset() {
+    console.log('[InterpretScreen] handleReset()')
+    setRunning(false)
+    resetCamera()
+  }
 
   return (
     <section className="min-h-screen flex flex-col px-4 sm:px-6 py-6 max-w-6xl mx-auto">
@@ -251,7 +243,6 @@ export default function InterpretScreen({ onBack, onHome }) {
           </svg>
           Cambiar modo
         </button>
-
         <div className="flex items-center gap-2">
           <ResetButton onClick={handleReset} />
           <button onClick={onHome} className="flex items-center gap-2 group" title="Inicio">
@@ -309,13 +300,13 @@ export default function InterpretScreen({ onBack, onHome }) {
                   : cameraOk ? 'bg-green-400'
                   : 'bg-white/60')} />
               {running
-                ? handVisible ? 'Detectando movimiento…' : 'Esperando mano…'
+                ? handVisible ? 'Detectando…' : 'Esperando mano…'
                 : cameraOk ? 'Listo' : 'En espera'}
             </div>
 
             {latest && (
               <div className="absolute bottom-3 left-1/2 -translate-x-1/2 px-5 py-2 rounded-full bg-white/95 backdrop-blur text-signara-navy font-bold tracking-wide shadow-soft text-sm">
-                {latest.sign} · {Math.round((latest.confidence || 0) * 100)}%
+                {latest.sign.replace(/_/g, ' ')} · {Math.round((latest.confidence || 0) * 100)}%
               </div>
             )}
           </div>
@@ -350,6 +341,8 @@ export default function InterpretScreen({ onBack, onHome }) {
               Leer en voz alta
             </label>
           </div>
+
+          <GestureLegend />
         </div>
 
         <div className="lg:col-span-2 flex flex-col gap-4">
@@ -359,7 +352,9 @@ export default function InterpretScreen({ onBack, onHome }) {
             </p>
             {latest ? (
               <div className="mt-2">
-                <p className="text-3xl font-extrabold gradient-text">{latest.sign}</p>
+                <p className="text-3xl font-extrabold gradient-text">
+                  {latest.sign.replace(/_/g, ' ')}
+                </p>
                 <p className="mt-1 text-signara-navy text-lg leading-relaxed">{latest.text}</p>
                 <p className="mt-2 text-xs text-signara-navy/60">
                   Confianza: {Math.round((latest.confidence || 0) * 100)}%
@@ -367,7 +362,7 @@ export default function InterpretScreen({ onBack, onHome }) {
               </div>
             ) : (
               <p className="mt-2 italic text-signara-navy/40">
-                Pulsa <strong>Empezar a interpretar</strong> y saluda con la mano.
+                Pulsa <strong>Empezar a interpretar</strong> y haz una de las señas.
               </p>
             )}
           </div>
@@ -384,7 +379,7 @@ export default function InterpretScreen({ onBack, onHome }) {
               <ul className="mt-3 space-y-2">
                 {history.map((h, i) => (
                   <li key={i} className="flex items-baseline gap-3">
-                    <span className="chip">{h.sign}</span>
+                    <span className="chip">{h.sign.replace(/_/g, ' ')}</span>
                     <span className="text-signara-navy/80 text-sm flex-1">{h.text}</span>
                     <span className="text-[11px] text-signara-navy/50">
                       {Math.round((h.confidence || 0) * 100)}%
@@ -398,9 +393,32 @@ export default function InterpretScreen({ onBack, onHome }) {
       </div>
 
       <footer className="mt-6 text-center text-xs text-white/60">
-        MVP · Reconocimiento de gesto "saludar" con MediaPipe Hands.
+        MVP · Heurísticas geométricas sobre MediaPipe Hands. Más señas pronto.
       </footer>
     </section>
+  )
+}
+
+function GestureLegend() {
+  const items = [
+    { sign: 'HOLA',    hint: 'agita la mano de lado a lado' },
+    { sign: 'AYUDA',   hint: 'mueve la mano arriba y abajo' },
+    { sign: 'GRACIAS', hint: 'empuja la mano hacia la cámara' }
+  ]
+  return (
+    <details className="mt-4 group" open>
+      <summary className="cursor-pointer text-white/85 text-xs font-semibold uppercase tracking-[0.2em] select-none">
+        Señas disponibles ({items.length})
+      </summary>
+      <ul className="mt-3 grid grid-cols-1 sm:grid-cols-3 gap-2">
+        {items.map((it) => (
+          <li key={it.sign} className="flex items-baseline gap-2 text-xs text-white/85">
+            <span className="chip text-signara-navy">{it.sign}</span>
+            <span className="opacity-80">{it.hint}</span>
+          </li>
+        ))}
+      </ul>
+    </details>
   )
 }
 
