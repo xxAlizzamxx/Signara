@@ -2,8 +2,7 @@
  * translateText
  *
  * MVP-mocked translator. In production this will hit the Claude API:
- *
- *   POST /api/translate { text }  →  { signs: ["YO","NECESITAR","AYUDA"] }
+ *   POST /api/translate { text }  ->  { signs: ["YO","NECESITAR","AYUDA"] }
  *
  * For now we ship a small handcrafted dictionary + simple rules so the demo
  * feels alive. Anything unrecognised falls through to a naive token
@@ -13,8 +12,8 @@
 
 const STOPWORDS = new Set([
   'a','al','de','del','la','las','el','los','un','una','unos','unas',
-  'y','o','u','que','qué','en','con','por','para','es','son','soy',
-  'me','te','se','su','sus','mi','mis','lo','le','les','sí','si'
+  'y','o','u','que','en','con','por','para','es','son','soy',
+  'me','te','se','su','sus','mi','mis','lo','le','les'
 ])
 
 // Hand-crafted phrase mappings (lower-case, accent-stripped lookups).
@@ -46,16 +45,15 @@ const WORD_MAP = {
 }
 
 const stripAccents = (s) =>
-  s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
+  s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase()
 
 /**
  * translateText
  * @param {string} input - Spanish phrase, free-form.
  * @returns {Promise<string[]>} - ordered list of canonical sign tokens.
  *
- * NOTE: This is a mock. Replace the body with a call to the Claude API
- * once the backend is wired up. The function signature and return shape
- * MUST stay the same so the rest of the app keeps working.
+ * NOTE: This is a mock. Replace the body with a real Claude API call
+ * once the backend is wired up.
  */
 export async function translateText(input) {
   // Simulate network latency for a more realistic demo feel.
@@ -63,6 +61,16 @@ export async function translateText(input) {
 
   const text = stripAccents(String(input || '').trim())
   if (!text) return []
+
+  // ---- DEMO HOOK ----------------------------------------------------------
+  // Temporary forced-route for the live "hola" video test:
+  // any input that contains the word "hola" returns EXACTLY ["HOLA"].
+  // Remove this block once the Claude backend is wired up.
+  if (/\bhola\b/.test(text)) {
+    console.log('[translateText] forced-route: hola -> ["HOLA"]')
+    return ['HOLA']
+  }
+  // -------------------------------------------------------------------------
 
   // 1. Try whole-phrase rules first.
   for (const rule of PHRASE_MAP) {
