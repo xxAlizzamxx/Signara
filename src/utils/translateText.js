@@ -4,10 +4,11 @@
  * MVP-mocked translator. In production this will hit the Claude API:
  *   POST /api/translate { text }  ->  { signs: ["YO","NECESITAR","AYUDA"] }
  *
- * For now we ship a small handcrafted dictionary + simple rules so the demo
- * feels alive. Anything unrecognised falls through to a naive token
- * conversion (uppercased words, stop-words removed) so the avatar still has
- * something reasonable to play.
+ * Strategy: greedy left-to-right phrase matcher. At each position we try
+ * every PHRASE_MAP rule; if one matches at the start of the remaining text
+ * we emit its signs and advance. Otherwise we consume the next token via
+ * WORD_MAP. This way sentences like "hola necesito ayuda" produce the
+ * full sequence ["HOLA","YO","NECESITAR","AYUDA"].
  */
 
 const STOPWORDS = new Set([
@@ -16,24 +17,23 @@ const STOPWORDS = new Set([
   'me','te','se','su','sus','mi','mis','lo','le','les'
 ])
 
-// Hand-crafted phrase mappings (lower-case, accent-stripped lookups).
+// Order matters for ties: longer / more-specific phrases first.
 const PHRASE_MAP = [
-  { match: /\b(necesito|necesita|necesitamos)\s+ayuda\b/, signs: ['YO','NECESITAR','AYUDA'] },
-  { match: /\bes\s+urgente\b/,                            signs: ['URGENTE'] },
-  { match: /\bhola\b/,                                    signs: ['HOLA'] },
-  { match: /\badios\b/,                                   signs: ['ADIOS'] },
-  { match: /\bgracias\b/,                                 signs: ['GRACIAS'] },
-  { match: /\bpor\s+favor\b/,                             signs: ['POR_FAVOR'] },
-  { match: /\bcomo\s+estas\b/,                            signs: ['COMO_ESTAS'] },
-  { match: /\bme\s+llamo\b/,                              signs: ['YO','NOMBRE'] },
-  { match: /\btengo\s+sed\b/,                             signs: ['YO','NECESITAR','AGUA'] },
-  { match: /\btengo\s+hambre\b/,                          signs: ['YO','NECESITAR','COMIDA'] },
-  { match: /\bestoy\s+bien\b/,                            signs: ['YO','BIEN'] },
-  { match: /\bestoy\s+mal\b/,                             signs: ['YO','MAL'] },
-  { match: /\bte\s+amo\b/,                                signs: ['YO','AMOR','TU'] }
+  { match: /^(necesito|necesita|necesitamos)\s+ayuda\b/, signs: ['YO','NECESITAR','AYUDA'] },
+  { match: /^tengo\s+sed\b/,                            signs: ['YO','NECESITAR','AGUA'] },
+  { match: /^tengo\s+hambre\b/,                         signs: ['YO','NECESITAR','COMIDA'] },
+  { match: /^estoy\s+bien\b/,                           signs: ['YO','BIEN'] },
+  { match: /^estoy\s+mal\b/,                            signs: ['YO','MAL'] },
+  { match: /^te\s+amo\b/,                               signs: ['YO','AMOR','TU'] },
+  { match: /^me\s+llamo\b/,                             signs: ['YO','NOMBRE'] },
+  { match: /^como\s+estas\b/,                           signs: ['COMO_ESTAS'] },
+  { match: /^por\s+favor\b/,                            signs: ['POR_FAVOR'] },
+  { match: /^es\s+urgente\b/,                           signs: ['URGENTE'] },
+  { match: /^hola\b/,                                   signs: ['HOLA'] },
+  { match: /^adios\b/,                                  signs: ['ADIOS'] },
+  { match: /^gracias\b/,                                signs: ['GRACIAS'] }
 ]
 
-// Word-level fallback dictionary.
 const WORD_MAP = {
   hola: 'HOLA', adios: 'ADIOS', gracias: 'GRACIAS',
   yo: 'YO', tu: 'TU', necesito: 'NECESITAR', necesita: 'NECESITAR',
@@ -48,45 +48,41 @@ const stripAccents = (s) =>
   s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase()
 
 /**
- * translateText
- * @param {string} input - Spanish phrase, free-form.
- * @returns {Promise<string[]>} - ordered list of canonical sign tokens.
- *
- * NOTE: This is a mock. Replace the body with a real Claude API call
- * once the backend is wired up.
+ * @param {string} input - free-form Spanish text.
+ * @returns {Promise<string[]>} - canonical sign tokens, in order.
  */
 export async function translateText(input) {
-  // Simulate network latency for a more realistic demo feel.
-  await new Promise((r) => setTimeout(r, 600))
+  await new Promise((r) => setTimeout(r, 300))
 
-  const text = stripAccents(String(input || '').trim())
-  if (!text) return []
-
-  // ---- DEMO HOOK ----------------------------------------------------------
-  // Temporary forced-route for the live "hola" video test:
-  // any input that contains the word "hola" returns EXACTLY ["HOLA"].
-  // Remove this block once the Claude backend is wired up.
-  if (/\bhola\b/.test(text)) {
-    console.log('[translateText] forced-route: hola -> ["HOLA"]')
-    return ['HOLA']
-  }
-  // -------------------------------------------------------------------------
-
-  // 1. Try whole-phrase rules first.
-  for (const rule of PHRASE_MAP) {
-    if (rule.match.test(text)) return rule.signs
-  }
-
-  // 2. Token-level fallback.
-  const tokens = text
+  let remaining = stripAccents(String(input || '').trim())
     .replace(/[^\p{L}\s]/gu, ' ')
-    .split(/\s+/)
-    .filter((t) => t && !STOPWORDS.has(t))
+    .replace(/\s+/g, ' ')
+    .trim()
 
-  const signs = tokens.map((t) => WORD_MAP[t] || t.toUpperCase())
+  if (!remaining) return []
 
-  // Hard demo guarantee: if nothing matched, return the canonical example
-  // from the spec so the avatar always has something to play.
-  if (signs.length === 0) return ['YO', 'NECESITAR', 'AYUDA']
-  return signs
+  const result = []
+  let safety = 50
+
+  outer: while (remaining.length > 0 && safety-- > 0) {
+    // Try each phrase rule against the start of `remaining`
+    for (const rule of PHRASE_MAP) {
+      const m = remaining.match(rule.match)
+      if (m) {
+        result.push(...rule.signs)
+        remaining = remaining.slice(m[0].length).trim()
+        continue outer
+      }
+    }
+    // No phrase match - consume the next token
+    const spaceIdx = remaining.indexOf(' ')
+    const tok = spaceIdx === -1 ? remaining : remaining.slice(0, spaceIdx)
+    if (tok && !STOPWORDS.has(tok)) {
+      result.push(WORD_MAP[tok] || tok.toUpperCase())
+    }
+    remaining = spaceIdx === -1 ? '' : remaining.slice(spaceIdx + 1).trim()
+  }
+
+  if (result.length === 0) return ['YO', 'NECESITAR', 'AYUDA']
+  return result
 }
