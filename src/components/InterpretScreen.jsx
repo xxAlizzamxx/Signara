@@ -4,42 +4,42 @@ import Logo from './Logo.jsx'
 /**
  * InterpretScreen
  *
- * Real-time hand-wave detection using MediaPipe Hands.
- * Detected gesture -> "HOLA"  (kept short, no full sentence)
- *
- * Includes a LIMPIAR button that resets:
- *   - latest detection (clear card)
- *   - history list
- *   - X-position ring buffer
- *   - cooldown timer
- *   - cancels any pending speech synthesis
- *   - DOES NOT stop the camera or hands solution
+ * Real-time hand-wave detection using MediaPipe Holistic.
+ * Detected gestures: "HOLA", "GRACIAS", "POR FAVOR", "TÚ", "YO".
  */
 
-const MEDIAPIPE_HANDS_VER = '0.4.1675469240'
+const MEDIAPIPE_HOLISTIC_VER = '0.5.1675471629'
 const MEDIAPIPE_CAM_VER = '0.3.1675466862'
 const MEDIAPIPE_DRAW_VER = '0.3.1675466124'
 
 const MP_SCRIPTS = [
-  `https://cdn.jsdelivr.net/npm/@mediapipe/hands@${MEDIAPIPE_HANDS_VER}/hands.js`,
+  `https://cdn.jsdelivr.net/npm/@mediapipe/holistic@${MEDIAPIPE_HOLISTIC_VER}/holistic.js`,
   `https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@${MEDIAPIPE_CAM_VER}/camera_utils.js`,
   `https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils@${MEDIAPIPE_DRAW_VER}/drawing_utils.js`
 ]
 
-const HISTORY_LEN = 18
-const WAVE_THRESHOLD = 0.18
+const HISTORY_LEN = 20
 const COOLDOWN_MS = 2000
 
 function loadScript(url) {
   return new Promise((resolve, reject) => {
-    if (document.querySelector('script[data-signara="' + url + '"]')) return resolve()
-    const s = document.createElement('script')
+    let s = document.querySelector(`script[data-signara="${url}"]`)
+    if (s) {
+      if (s.getAttribute('data-loaded') === 'true') return resolve()
+      s.addEventListener('load', resolve)
+      s.addEventListener('error', () => reject(new Error('Failed to load ' + url)))
+      return
+    }
+    s = document.createElement('script')
     s.src = url
     s.async = true
     s.crossOrigin = 'anonymous'
     s.dataset.signara = url
-    s.onload = () => resolve()
-    s.onerror = () => reject(new Error('Failed to load ' + url))
+    s.addEventListener('load', () => {
+      s.setAttribute('data-loaded', 'true')
+      resolve()
+    })
+    s.addEventListener('error', () => reject(new Error('Failed to load ' + url)))
     document.head.appendChild(s)
   })
 }
@@ -50,11 +50,11 @@ async function loadMediaPipe() {
 export default function InterpretScreen({ onBack, onHome }) {
   const videoRef = useRef(null)
   const canvasRef = useRef(null)
-  const handsRef = useRef(null)
+  const holisticRef = useRef(null)
   const cameraRef = useRef(null)
 
-  // Refs that callbacks read - always up to date without re-subscribing
-  const poseHistoryRef = useRef([])
+  const poseHistoryLeftRef = useRef([])
+  const poseHistoryRightRef = useRef([])
   const lastDetectionRef = useRef(0)
   const runningRef = useRef(false)
   const audioRef = useRef(true)
@@ -73,7 +73,6 @@ export default function InterpretScreen({ onBack, onHome }) {
   useEffect(() => { runningRef.current = running }, [running])
   useEffect(() => { audioRef.current = audioOn }, [audioOn])
 
-  // ---- Load MediaPipe -----------------------------------------------------
   useEffect(() => {
     let cancelled = false
     loadMediaPipe()
@@ -85,35 +84,37 @@ export default function InterpretScreen({ onBack, onHome }) {
     return () => { cancelled = true }
   }, [])
 
-  // ---- Init Hands + Camera once scripts ready -----------------------------
   useEffect(() => {
     if (!scriptsLoaded) return
-    const HandsCtor = window.Hands
+    const HolisticCtor = window.Holistic
     const CameraCtor = window.Camera
-    if (!HandsCtor || !CameraCtor) {
+    if (!HolisticCtor || !CameraCtor) {
       setScriptsError('MediaPipe no se cargó correctamente.')
       return
     }
     const videoEl = videoRef.current
     if (!videoEl) return
 
-    const hands = new HandsCtor({
+    const holistic = new HolisticCtor({
       locateFile: (file) =>
-        `https://cdn.jsdelivr.net/npm/@mediapipe/hands@${MEDIAPIPE_HANDS_VER}/${file}`
+        `https://cdn.jsdelivr.net/npm/@mediapipe/holistic@${MEDIAPIPE_HOLISTIC_VER}/${file}`
     })
-    hands.setOptions({
-      maxNumHands: 2,
-      modelComplexity: 0,
-      minDetectionConfidence: 0.6,
+    holistic.setOptions({
+      modelComplexity: 1,
+      smoothLandmarks: true,
+      enableSegmentation: false,
+      smoothSegmentation: false,
+      refineFaceLandmarks: false,
+      minDetectionConfidence: 0.5,
       minTrackingConfidence: 0.5
     })
-    hands.onResults(handleResults)
-    handsRef.current = hands
+    holistic.onResults(handleResults)
+    holisticRef.current = holistic
 
     const camera = new CameraCtor(videoEl, {
       onFrame: async () => {
-        if (handsRef.current && videoEl.readyState >= 2) {
-          try { await handsRef.current.send({ image: videoEl }) } catch (_) { }
+        if (holisticRef.current && videoEl.readyState >= 2) {
+          try { await holisticRef.current.send({ image: videoEl }) } catch (_) { }
         }
       },
       width: 640,
@@ -134,13 +135,46 @@ export default function InterpretScreen({ onBack, onHome }) {
 
     return () => {
       try { camera.stop() } catch (_) { }
-      try { hands.close() } catch (_) { }
-      handsRef.current = null
+      try { holistic.close() } catch (_) { }
+      holisticRef.current = null
       cameraRef.current = null
     }
   }, [scriptsLoaded])
 
-  // ---- Per-frame -----------------------------------------------------------
+  const isFingersClosedExceptIndex = (landmarks) => {
+    const dist = (p1, p2) => Math.hypot(p1.x - p2.x, p1.y - p2.y, p1.z - p2.z)
+    const indexExtended = dist(landmarks[8], landmarks[0]) > dist(landmarks[6], landmarks[0])
+    const middleClosed = dist(landmarks[12], landmarks[0]) < dist(landmarks[10], landmarks[0])
+    const ringClosed = dist(landmarks[16], landmarks[0]) < dist(landmarks[14], landmarks[0])
+    const pinkyClosed = dist(landmarks[20], landmarks[0]) < dist(landmarks[18], landmarks[0])
+    return indexExtended && middleClosed && ringClosed && pinkyClosed
+  }
+
+  const isHandOpen = (landmarks) => {
+    const dist = (p1, p2) => Math.hypot(p1.x - p2.x, p1.y - p2.y, p1.z - p2.z)
+    const indexExtended = dist(landmarks[8], landmarks[0]) > dist(landmarks[6], landmarks[0])
+    const middleExtended = dist(landmarks[12], landmarks[0]) > dist(landmarks[10], landmarks[0])
+    const ringExtended = dist(landmarks[16], landmarks[0]) > dist(landmarks[14], landmarks[0])
+    const pinkyExtended = dist(landmarks[20], landmarks[0]) > dist(landmarks[18], landmarks[0])
+    return indexExtended && middleExtended && ringExtended && pinkyExtended
+  }
+
+  const isCircularMovement = (history) => {
+    if (history.length < 10) return false
+    let minX = 1, maxX = 0, minY = 1, maxY = 0
+    history.forEach(p => {
+      if (p.x < minX) minX = p.x
+      if (p.x > maxX) maxX = p.x
+      if (p.y < minY) minY = p.y
+      if (p.y > maxY) maxY = p.y
+    })
+    const rangeX = maxX - minX
+    const rangeY = maxY - minY
+    if (rangeX < 0.05 || rangeY < 0.05) return false
+    if (rangeX / rangeY > 3 || rangeY / rangeX > 3) return false
+    return true
+  }
+
   function handleResults(results) {
     const canvas = canvasRef.current
     const video = videoRef.current
@@ -152,135 +186,194 @@ export default function InterpretScreen({ onBack, onHome }) {
     ctx.save()
     ctx.clearRect(0, 0, canvas.width, canvas.height)
 
-    const lms = results.multiHandLandmarks
-    const has = Array.isArray(lms) && lms.length > 0
+    const hasLeftHand = !!results.leftHandLandmarks
+    const hasRightHand = !!results.rightHandLandmarks
+    const hasFace = !!results.faceLandmarks
+    const hasPose = !!results.poseLandmarks
 
-    if (has) {
-      if (window.drawConnectors && window.drawLandmarks && window.HAND_CONNECTIONS) {
-        lms.forEach((landmarks) => {
-          window.drawConnectors(ctx, landmarks, window.HAND_CONNECTIONS, {
-            color: 'rgba(112,96,168,0.85)', lineWidth: 3
-          })
-          window.drawLandmarks(ctx, landmarks, {
-            color: 'rgba(31,64,194,0.95)', lineWidth: 1, radius: 4
-          })
-        })
+    if (hasLeftHand || hasRightHand) {
+      if (window.drawConnectors && window.drawLandmarks) {
+        if (hasLeftHand) {
+          window.drawConnectors(ctx, results.leftHandLandmarks, window.HAND_CONNECTIONS, { color: 'rgba(112,96,168,0.85)', lineWidth: 3 })
+          window.drawLandmarks(ctx, results.leftHandLandmarks, { color: 'rgba(31,64,194,0.95)', lineWidth: 1, radius: 4 })
+        }
+        if (hasRightHand) {
+          window.drawConnectors(ctx, results.rightHandLandmarks, window.HAND_CONNECTIONS, { color: 'rgba(112,96,168,0.85)', lineWidth: 3 })
+          window.drawLandmarks(ctx, results.rightHandLandmarks, { color: 'rgba(31,64,194,0.95)', lineWidth: 1, radius: 4 })
+        }
       }
 
       const now = Date.now()
 
-      if (lms.length > 0) {
-        const landmarks = lms[0] // Usamos la primera mano detectada
+      if (hasLeftHand) {
+        const lms = results.leftHandLandmarks
+        const wrist = lms[0]
+        const size = Math.sqrt(Math.pow(lms[0].x - lms[9].x, 2) + Math.pow(lms[0].y - lms[9].y, 2))
+        poseHistoryLeftRef.current.push({ x: wrist.x, y: wrist.y, s: size, lms })
+        if (poseHistoryLeftRef.current.length > HISTORY_LEN) poseHistoryLeftRef.current.shift()
+      } else {
+        poseHistoryLeftRef.current = []
+      }
 
-        const wristX = landmarks[0].x
-        const wristY = landmarks[0].y
-        // Aproximar el tamaño de la mano usando la distancia entre la muñeca y la base del dedo medio
-        const dx = landmarks[0].x - landmarks[9].x
-        const dy = landmarks[0].y - landmarks[9].y
-        const size = Math.sqrt(dx * dx + dy * dy)
+      if (hasRightHand) {
+        const lms = results.rightHandLandmarks
+        const wrist = lms[0]
+        const size = Math.sqrt(Math.pow(lms[0].x - lms[9].x, 2) + Math.pow(lms[0].y - lms[9].y, 2))
+        poseHistoryRightRef.current.push({ x: wrist.x, y: wrist.y, s: size, lms })
+        if (poseHistoryRightRef.current.length > HISTORY_LEN) poseHistoryRightRef.current.shift()
+      } else {
+        poseHistoryRightRef.current = []
+      }
 
-        const buf = poseHistoryRef.current
-        buf.push({ x: wristX, y: wristY, s: size })
-        if (buf.length > HISTORY_LEN) buf.shift()
+      if (runningRef.current) {
+        let recognized = false
+        const canDetect = now - lastDetectionRef.current > COOLDOWN_MS
 
-        if (runningRef.current && buf.length >= 10) {
+        // --- YO ---
+        if (canDetect && !recognized) {
+          const checkYo = (historyBuf) => {
+            if (historyBuf.length < 10) return false
+            const first = historyBuf[0]
+            const last = historyBuf[historyBuf.length - 1]
+            const isIndexOnly = isFingersClosedExceptIndex(last.lms)
+            
+            // Para "Yo", el índice apunta hacia el cuerpo (z es mayor o positivo comparado a la base 5)
+            const pointingBackward = last.lms[8].z > last.lms[5].z
+            
+            // Movimiento: la mano suele acercarse al cuerpo (disminuye la escala) o se mueve ligeramente
+            const movedTowardsBody = (last.s - first.s) < 0 || Math.abs(last.x - first.x) > 0.01 || Math.abs(last.y - first.y) > 0.01
+            
+            return isIndexOnly && pointingBackward && movedTowardsBody
+          }
+
+          if (checkYo(poseHistoryRightRef.current) || checkYo(poseHistoryLeftRef.current)) {
+            triggerRecognition('YO', 'Yo')
+            recognized = true
+          }
+        }
+
+        // --- TÚ ---
+        if (canDetect && !recognized) {
+          const checkTu = (historyBuf) => {
+            if (historyBuf.length < 10) return false
+            const first = historyBuf[0]
+            const last = historyBuf[historyBuf.length - 1]
+            const isIndexOnly = isFingersClosedExceptIndex(last.lms)
+            
+            // Para "Tú", el índice apunta hacia la cámara (z es bastante negativo comparado a la base)
+            const pointingForward = last.lms[8].z < last.lms[5].z - 0.01
+            
+            // Movimiento hacia adelante (aumenta escala)
+            const movedForward = (last.s - first.s) > 0.008 
+            
+            return isIndexOnly && pointingForward && movedForward
+          }
+
+          if (checkTu(poseHistoryRightRef.current) || checkTu(poseHistoryLeftRef.current)) {
+            triggerRecognition('TÚ', 'Tú')
+            recognized = true
+          }
+        }
+
+        // --- GRACIAS ---
+        if (canDetect && !recognized && poseHistoryRightRef.current.length >= 10 && hasFace) {
+          const buf = poseHistoryRightRef.current
+          const first = buf[0]
+          const last = buf[buf.length - 1]
+
+          const mouthLms = results.faceLandmarks[14]
+          const nearMouth = Math.abs(first.x - mouthLms.x) < 0.2 && Math.abs(first.y - mouthLms.y) < 0.2
+          
+          const moveX = last.x - first.x
+          const moveY = last.y - first.y
+          const scaleChange = last.s - first.s
+
+          const forwardOrDown = moveY > 0.04 || scaleChange > 0.01
+          const notHorizontal = Math.abs(moveX) < 0.15
+
+          if (nearMouth && forwardOrDown && notHorizontal) {
+            triggerRecognition('GRACIAS', 'Gracias')
+            recognized = true
+          }
+        }
+
+        // --- POR FAVOR ---
+        if (canDetect && !recognized && hasPose) {
+          const checkPorFavor = (historyBuf) => {
+            if (historyBuf.length < 10) return false
+            const first = historyBuf[0]
+            const last = historyBuf[historyBuf.length - 1]
+            
+            const shoulderLeft = results.poseLandmarks[11]
+            const shoulderRight = results.poseLandmarks[12]
+            const chestX = (shoulderLeft.x + shoulderRight.x) / 2
+            const chestY = (shoulderLeft.y + shoulderRight.y) / 2 + 0.1
+
+            const nearChest = Math.abs(first.x - chestX) < 0.3 && Math.abs(first.y - chestY) < 0.3
+            const openHand = isHandOpen(last.lms)
+            const isCircle = isCircularMovement(historyBuf)
+
+            return nearChest && openHand && isCircle
+          }
+
+          if (checkPorFavor(poseHistoryRightRef.current) || checkPorFavor(poseHistoryLeftRef.current)) {
+            triggerRecognition('POR FAVOR', 'Por favor')
+            recognized = true
+          }
+        }
+
+        // --- HOLA ---
+        if (canDetect && !recognized && poseHistoryLeftRef.current.length >= 10) {
+          const buf = poseHistoryLeftRef.current
           const first = buf[0]
           const last = buf[buf.length - 1]
 
           const moveX = last.x - first.x
           const moveY = last.y - first.y
-          const scaleChange = last.s - first.s
 
-          let recognized = false
+          const isHorizontal = Math.abs(moveX) > Math.abs(moveY) * 1.5
+          const bigMove = Math.abs(moveX) > 0.08
 
-          // =========================
-          // 🙏 GRACIAS (PRIMERO)
-          // =========================
-          // Relajamos las condiciones para que sea más fácil de detectar
-          const nearMouth =
-            first.y < 0.7 && first.x > 0.1 && first.x < 0.9
-
-          const forwardOrDown =
-            moveY > 0.04 || scaleChange > 0.01
-
-          const notHorizontal = Math.abs(moveX) < 0.2
-
-          if (
-            nearMouth &&
-            forwardOrDown &&
-            notHorizontal &&
-            now - lastDetectionRef.current > COOLDOWN_MS
-          ) {
-            lastDetectionRef.current = now
-            poseHistoryRef.current = []
+          if (isHorizontal && bigMove && Math.abs(moveY) < 0.15) {
+            triggerRecognition('HOLA', 'Hola')
             recognized = true
-
-            const detection = {
-              sign: 'GRACIAS',
-              text: 'Gracias',
-              confidence: 0.95
-            }
-
-            setLatest(detection)
-            setHistory((h) => [detection, ...h].slice(0, 8))
-            speak(detection.text)
           }
+        }
 
-          // =========================
-          // 👋 HOLA (DESPUÉS)
-          // =========================
-          const isHorizontal =
-            Math.abs(moveX) > Math.abs(moveY) * 1.0
-
-          const inCenter =
-            first.y > 0.1 && first.y < 0.9
-
-          if (
-            !recognized &&
-            isHorizontal &&
-            Math.abs(moveX) > 0.06 &&
-            Math.abs(moveY) < 0.2 &&
-            inCenter &&
-            now - lastDetectionRef.current > COOLDOWN_MS
-          ) {
-            lastDetectionRef.current = now
-            poseHistoryRef.current = []
-            recognized = true
-
-            const detection = {
-              sign: 'HOLA',
-              text: 'Hola',
-              confidence: 0.95
-            }
-
-            setLatest(detection)
-            setHistory((h) => [detection, ...h].slice(0, 8))
-            speak(detection.text)
+        // --- UNRECOGNIZED ---
+        if (canDetect && !recognized) {
+          const checkSignificant = (buf) => {
+            if (buf.length < 10) return false
+            const moveX = buf[buf.length-1].x - buf[0].x
+            const moveY = buf[buf.length-1].y - buf[0].y
+            return Math.abs(moveX) > 0.15 || Math.abs(moveY) > 0.15
           }
-
-          // =========================
-          // ❌ NO RECONOCIDO
-          // =========================
-          const significantMovement =
-            Math.abs(moveX) > 0.1 || Math.abs(moveY) > 0.1
-
-          if (
-            !recognized &&
-            significantMovement &&
-            now - lastDetectionRef.current > COOLDOWN_MS
-          ) {
+          if (checkSignificant(poseHistoryLeftRef.current) || checkSignificant(poseHistoryRightRef.current)) {
             setUnrecognized(true)
             setTimeout(() => setUnrecognized(false), 800)
-            poseHistoryRef.current = []
+            poseHistoryLeftRef.current = []
+            poseHistoryRightRef.current = []
           }
         }
       }
     } else {
-      poseHistoryRef.current = []
+      poseHistoryLeftRef.current = []
+      poseHistoryRightRef.current = []
     }
 
-    setHandVisible(has)
+    setHandVisible(hasLeftHand || hasRightHand)
     ctx.restore()
+  }
+
+  function triggerRecognition(sign, text) {
+    lastDetectionRef.current = Date.now()
+    poseHistoryLeftRef.current = []
+    poseHistoryRightRef.current = []
+    
+    const detection = { sign, text, confidence: 0.95 }
+    setLatest(detection)
+    setHistory((h) => [detection, ...h].slice(0, 8))
+    speak(text)
   }
 
   function speak(text) {
@@ -297,7 +390,8 @@ export default function InterpretScreen({ onBack, onHome }) {
   }
 
   function startDetect() {
-    poseHistoryRef.current = []
+    poseHistoryLeftRef.current = []
+    poseHistoryRightRef.current = []
     lastDetectionRef.current = 0
     setRunning(true)
   }
@@ -306,18 +400,15 @@ export default function InterpretScreen({ onBack, onHome }) {
     if (typeof window !== 'undefined' && window.speechSynthesis) window.speechSynthesis.cancel()
   }
 
-  // ---- LIMPIAR -------------------------------------------------------------
-  // Resets detection state, leaves the camera running.
   const handleReset = useCallback(() => {
-    console.log('[InterpretScreen] handleReset()')
     setLatest(null)
     setHistory([])
-    poseHistoryRef.current = []
+    poseHistoryLeftRef.current = []
+    poseHistoryRightRef.current = []
     lastDetectionRef.current = 0
     if (typeof window !== 'undefined' && window.speechSynthesis) {
       window.speechSynthesis.cancel()
     }
-    // camera + hands stay alive intentionally
   }, [])
 
   return (
@@ -360,7 +451,7 @@ export default function InterpretScreen({ onBack, onHome }) {
 
             {!scriptsLoaded && !scriptsError && (
               <div className="absolute inset-0 flex items-center justify-center text-white/80 text-sm">
-                Cargando MediaPipe…
+                Cargando MediaPipe Holistic…
               </div>
             )}
             {scriptsError && (
@@ -445,7 +536,7 @@ export default function InterpretScreen({ onBack, onHome }) {
               </div>
             ) : (
               <p className="mt-2 italic text-signara-navy/40">
-                Pulsa <strong>Empezar a interpretar</strong> y saluda con la mano.
+                Pulsa <strong>Empezar a interpretar</strong> y haz una seña.
               </p>
             )}
           </div>
@@ -476,7 +567,7 @@ export default function InterpretScreen({ onBack, onHome }) {
       </div>
 
       <footer className="mt-6 text-center text-xs text-white/60">
-        Reconocimiento de gestos Hola y Gracias con MediaPipe Hands.
+        Reconocimiento avanzado de gestos con MediaPipe Holistic.
       </footer>
     </section>
   )
