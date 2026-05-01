@@ -21,8 +21,14 @@ import { getSignSrc, normalizeSign } from '../utils/signMap.js'
  * Public API (forwardRef):
  *   queue(sign), replace(signs), clear(), isPlaying(), queueLength()
  */
+const AVATAR_SRC_MAP = {
+  avatar: '/avatar.png',
+  hombre: '/avatar_hombre.png',
+  mujer: '/avatar_mujer.png'
+}
+
 const AvatarPlayer = forwardRef(function AvatarPlayer(
-  { signs = [], onSign, onFinish },
+  { signs = [], onSign, onFinish, avatarChoice = 'avatar', onPersonalize },
   ref
 ) {
   // Two persistent <video> elements
@@ -271,7 +277,12 @@ const AvatarPlayer = forwardRef(function AvatarPlayer(
 
         {/* Fallback avatar - underneath the videos. Hidden once we've
             successfully crossfaded any clip in. */}
-        {!hasShownAny && <FallbackAvatar active={isPlaying} />}
+        {!hasShownAny && (
+          <FallbackAvatar
+            active={isPlaying}
+            src={AVATAR_SRC_MAP[avatarChoice] || AVATAR_SRC_MAP.avatar}
+          />
+        )}
 
         {/* Sign label */}
         {currentLabel && (
@@ -296,11 +307,15 @@ const AvatarPlayer = forwardRef(function AvatarPlayer(
 
       <div className="mt-5 flex items-center justify-center gap-3">
         <button
-          className="btn-ghost py-2 px-5 text-sm"
-          onClick={clearQueue}
-          disabled={!isPlaying && queueLen === 0}
+          type="button"
+          className="btn-ghost py-2 px-5 text-sm inline-flex items-center gap-2"
+          onClick={() => { if (onPersonalize) onPersonalize() }}
         >
-          Limpiar
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <circle cx="12" cy="8" r="4" />
+            <path d="M4 21c0-4.4 3.6-8 8-8s8 3.6 8 8" />
+          </svg>
+          Personalizar
         </button>
       </div>
     </div>
@@ -309,30 +324,17 @@ const AvatarPlayer = forwardRef(function AvatarPlayer(
 
 export default AvatarPlayer
 
-function FallbackAvatar({ active }) {
+function FallbackAvatar({ active, src = '/avatar.png' }) {
   const [imgFailed, setImgFailed] = useState(false)
+  // Reset failure state if the src changes (e.g. user picks a new avatar).
+  useEffect(() => { setImgFailed(false) }, [src])
   return (
     <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
       <div className="relative flex items-center justify-center">
         {!imgFailed ? (
           <img
-            src="/avatar.png"
+            src={src}
             alt="Avatar Signara"
             onError={() => setImgFailed(true)}
             className={'relative h-72 w-72 sm:h-80 sm:w-80 object-contain drop-shadow-2xl ' + (active ? 'animate-float' : '')}
-            draggable={false}
-          />
-        ) : (
-          <div className={'relative h-44 w-44 rounded-full bg-gradient-to-br from-signara-blue to-signara-purple shadow-glow flex items-center justify-center ' + (active ? 'animate-float' : '')}>
-            <svg width="96" height="96" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M9 11V5a1.5 1.5 0 1 1 3 0v5" />
-              <path d="M12 10V4a1.5 1.5 0 1 1 3 0v6" />
-              <path d="M15 10V6a1.5 1.5 0 1 1 3 0v6" />
-              <path d="M9 11V8a1.5 1.5 0 0 0-3 0v6c0 3.3 2.7 6 6 6h1a6 6 0 0 0 6-6v-2" />
-            </svg>
-          </div>
-        )}
-      </div>
-    </div>
-  )
-}
+            d

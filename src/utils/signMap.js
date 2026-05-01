@@ -32,7 +32,9 @@ export const signMap = {
   HOY: '/videos/hoy.mp4',
   MANANA: '/videos/manana.mp4',
   NOMBRE: '/videos/nombre.mp4',
-  COMO_ESTAS: '/videos/como_estas.mp4'
+  COMO_ESTAS: '/videos/como_estas.mp4',
+  TENGO_SED: '/videos/tengo_sed.mp4',
+  TE_AMO: '/videos/te_amo.mp4'
 }
 
 /**
@@ -55,6 +57,4 @@ export function normalizeSign(word) {
  * getSignSrc
  * Returns the video URL for a sign, or null if unmapped (caller can fall back).
  */
-export function getSignSrc(sign) {
-  return signMap[normalizeSign(sign)] || null
-}
+export functi
