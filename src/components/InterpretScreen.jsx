@@ -5,7 +5,7 @@ import Logo from './Logo.jsx'
  * InterpretScreen
  *
  * Real-time hand-wave detection using MediaPipe Holistic.
- * Detected gestures: "HOLA", "GRACIAS", "POR FAVOR", "TÚ", "YO".
+ * Detected gestures: "HOLA", "GRACIAS", "POR FAVOR", "TÚ", "YO", "SÍ".
  */
 
 const MEDIAPIPE_HOLISTIC_VER = '0.5.1675471629'
@@ -100,7 +100,7 @@ export default function InterpretScreen({ onBack, onHome }) {
         `https://cdn.jsdelivr.net/npm/@mediapipe/holistic@${MEDIAPIPE_HOLISTIC_VER}/${file}`
     })
     holistic.setOptions({
-      modelComplexity: 1,
+      modelComplexity: 0,
       smoothLandmarks: true,
       enableSegmentation: false,
       smoothSegmentation: false,
@@ -159,8 +159,17 @@ export default function InterpretScreen({ onBack, onHome }) {
     return indexExtended && middleExtended && ringExtended && pinkyExtended
   }
 
+  const isFist = (landmarks) => {
+    const dist = (p1, p2) => Math.hypot(p1.x - p2.x, p1.y - p2.y, p1.z - p2.z)
+    const indexClosed = dist(landmarks[8], landmarks[0]) < dist(landmarks[5], landmarks[0])
+    const middleClosed = dist(landmarks[12], landmarks[0]) < dist(landmarks[9], landmarks[0])
+    const ringClosed = dist(landmarks[16], landmarks[0]) < dist(landmarks[13], landmarks[0])
+    const pinkyClosed = dist(landmarks[20], landmarks[0]) < dist(landmarks[17], landmarks[0])
+    return indexClosed && middleClosed && ringClosed && pinkyClosed
+  }
+
   const isCircularMovement = (history) => {
-    if (history.length < 10) return false
+    if (history.length < 8) return false
     let minX = 1, maxX = 0, minY = 1, maxY = 0
     history.forEach(p => {
       if (p.x < minX) minX = p.x
@@ -170,8 +179,14 @@ export default function InterpretScreen({ onBack, onHome }) {
     })
     const rangeX = maxX - minX
     const rangeY = maxY - minY
-    if (rangeX < 0.05 || rangeY < 0.05) return false
-    if (rangeX / rangeY > 3 || rangeY / rangeX > 3) return false
+    
+    // Basta con que el movimiento no sea un punto inmóvil
+    if (rangeX < 0.03 || rangeY < 0.03) return false
+    
+    // Y que no sea puramente una línea vertical u horizontal extrema
+    const ratio = rangeX / rangeY
+    if (ratio < 0.25 || ratio > 4.0) return false
+    
     return true
   }
 
@@ -191,18 +206,31 @@ export default function InterpretScreen({ onBack, onHome }) {
     const hasFace = !!results.faceLandmarks
     const hasPose = !!results.poseLandmarks
 
-    if (hasLeftHand || hasRightHand) {
-      if (window.drawConnectors && window.drawLandmarks) {
-        if (hasLeftHand) {
-          window.drawConnectors(ctx, results.leftHandLandmarks, window.HAND_CONNECTIONS, { color: 'rgba(112,96,168,0.85)', lineWidth: 3 })
-          window.drawLandmarks(ctx, results.leftHandLandmarks, { color: 'rgba(31,64,194,0.95)', lineWidth: 1, radius: 4 })
-        }
-        if (hasRightHand) {
-          window.drawConnectors(ctx, results.rightHandLandmarks, window.HAND_CONNECTIONS, { color: 'rgba(112,96,168,0.85)', lineWidth: 3 })
-          window.drawLandmarks(ctx, results.rightHandLandmarks, { color: 'rgba(31,64,194,0.95)', lineWidth: 1, radius: 4 })
-        }
+    if (window.drawConnectors && window.drawLandmarks) {
+      if (hasPose) {
+        window.drawConnectors(ctx, results.poseLandmarks, window.POSE_CONNECTIONS, { color: '#00FF00', lineWidth: 4 })
+        window.drawLandmarks(ctx, results.poseLandmarks, { color: '#FF0000', lineWidth: 2 })
       }
+      if (hasFace) {
+        window.drawConnectors(ctx, results.faceLandmarks, window.FACEMESH_TESSELATION, { color: '#C0C0C070', lineWidth: 1 })
+        window.drawConnectors(ctx, results.faceLandmarks, window.FACEMESH_RIGHT_EYE, { color: '#FF3030' })
+        window.drawConnectors(ctx, results.faceLandmarks, window.FACEMESH_RIGHT_EYEBROW, { color: '#FF3030' })
+        window.drawConnectors(ctx, results.faceLandmarks, window.FACEMESH_LEFT_EYE, { color: '#30FF30' })
+        window.drawConnectors(ctx, results.faceLandmarks, window.FACEMESH_LEFT_EYEBROW, { color: '#30FF30' })
+        window.drawConnectors(ctx, results.faceLandmarks, window.FACEMESH_FACE_OVAL, { color: '#E0E0E0' })
+        window.drawConnectors(ctx, results.faceLandmarks, window.FACEMESH_LIPS, { color: '#E0E0E0' })
+      }
+      if (hasRightHand) {
+        window.drawConnectors(ctx, results.rightHandLandmarks, window.HAND_CONNECTIONS, { color: '#9333ea', lineWidth: 5 })
+        window.drawLandmarks(ctx, results.rightHandLandmarks, { color: '#3b82f6', lineWidth: 2, radius: 4 })
+      }
+      if (hasLeftHand) {
+        window.drawConnectors(ctx, results.leftHandLandmarks, window.HAND_CONNECTIONS, { color: '#3b82f6', lineWidth: 5 })
+        window.drawLandmarks(ctx, results.leftHandLandmarks, { color: '#9333ea', lineWidth: 2, radius: 4 })
+      }
+    }
 
+    if (hasLeftHand || hasRightHand) {
       const now = Date.now()
 
       if (hasLeftHand) {
@@ -232,7 +260,7 @@ export default function InterpretScreen({ onBack, onHome }) {
         // --- YO ---
         if (canDetect && !recognized) {
           const checkYo = (historyBuf) => {
-            if (historyBuf.length < 10) return false
+            if (historyBuf.length < 6) return false
             const first = historyBuf[0]
             const last = historyBuf[historyBuf.length - 1]
             const isIndexOnly = isFingersClosedExceptIndex(last.lms)
@@ -253,67 +281,158 @@ export default function InterpretScreen({ onBack, onHome }) {
         }
 
         // --- TÚ ---
+        // Gesto: mano derecha, dedo índice extendido apuntando directo a la cámara
         if (canDetect && !recognized) {
           const checkTu = (historyBuf) => {
-            if (historyBuf.length < 10) return false
-            const first = historyBuf[0]
-            const last = historyBuf[historyBuf.length - 1]
-            const isIndexOnly = isFingersClosedExceptIndex(last.lms)
-            
-            // Para "Tú", el índice apunta hacia la cámara (z es bastante negativo comparado a la base)
-            const pointingForward = last.lms[8].z < last.lms[5].z - 0.01
-            
-            // Movimiento hacia adelante (aumenta escala)
-            const movedForward = (last.s - first.s) > 0.008 
-            
-            return isIndexOnly && pointingForward && movedForward
-          }
+            // Necesitamos al menos 8 frames para confirmar el gesto estático
+            if (historyBuf.length < 8) return false;
 
-          if (checkTu(poseHistoryRightRef.current) || checkTu(poseHistoryLeftRef.current)) {
+            const dist3D = (p1, p2) => Math.hypot(p1.x - p2.x, p1.y - p2.y, p1.z - p2.z);
+
+            // Evaluar los últimos 8 frames con dos verificaciones complementarias:
+            // 1) La forma de la mano: índice extendido en 3D, otros dedos cerrados
+            // 2) La dirección: la punta del índice (8) está más cerca de la cámara que su nudillo MCP (5) en Z
+            const recentFrames = historyBuf.slice(-8);
+            let validFrames = 0;
+
+            for (const frame of recentFrames) {
+              const lms = frame.lms;
+
+              // A) Índice extendido en 3D: punta (8) más lejos de la muñeca (0) que el PIP (6)
+              const indexExtended3D = dist3D(lms[8], lms[0]) > dist3D(lms[6], lms[0]);
+
+              // B) Otros dedos cerrados en 3D: punta más cerca de la muñeca que el primer nudillo
+              const middleClosed3D = dist3D(lms[12], lms[0]) < dist3D(lms[10], lms[0]);
+              const ringClosed3D   = dist3D(lms[16], lms[0]) < dist3D(lms[14], lms[0]);
+              const pinkyClosed3D  = dist3D(lms[20], lms[0]) < dist3D(lms[18], lms[0]);
+
+              // C) Dirección hacia adelante (Z): punta del índice (8) debe estar
+              //    más cerca de la cámara que su nudillo MCP (5)
+              const indexPointingForward = lms[8].z < lms[5].z - 0.01;
+
+              if (indexExtended3D && middleClosed3D && ringClosed3D && pinkyClosed3D && indexPointingForward) {
+                validFrames++;
+              }
+            }
+
+            // Al menos 5 de 8 frames deben cumplir todas las condiciones
+            const stableGesture = validFrames >= 5;
+
+            // Gesto estático: la muñeca no se desplaza mucho en el plano 2D
+            const first = historyBuf[0];
+            const last  = historyBuf[historyBuf.length - 1];
+            const noLateralSweep  = Math.abs(last.x - first.x) < 0.12;
+            const noVerticalSweep = Math.abs(last.y - first.y) < 0.12;
+
+            return stableGesture && noLateralSweep && noVerticalSweep;
+          };
+
+          // Solo se evalúa la mano derecha (dedo índice derecho apuntando a la cámara)
+          if (checkTu(poseHistoryRightRef.current)) {
             triggerRecognition('TÚ', 'Tú')
             recognized = true
           }
         }
 
         // --- GRACIAS ---
-        if (canDetect && !recognized && poseHistoryRightRef.current.length >= 10 && hasFace) {
+        if (canDetect && !recognized && poseHistoryRightRef.current.length >= 6 && hasFace) {
           const buf = poseHistoryRightRef.current
           const first = buf[0]
           const last = buf[buf.length - 1]
 
           const mouthLms = results.faceLandmarks[14]
-          const nearMouth = Math.abs(first.x - mouthLms.x) < 0.2 && Math.abs(first.y - mouthLms.y) < 0.2
+          // Coloca la mano en la boca (rango relajado para mayor facilidad)
+          const nearMouth = Math.abs(first.x - mouthLms.x) < 0.15 && Math.abs(first.y - mouthLms.y) < 0.15
           
           const moveX = last.x - first.x
           const moveY = last.y - first.y
-          const scaleChange = last.s - first.s
 
-          const forwardOrDown = moveY > 0.04 || scaleChange > 0.01
-          const notHorizontal = Math.abs(moveX) < 0.15
+          // "movimiento hacia adelante en el eje x": la mano se desplaza en X alejándose
+          const movedInX = Math.abs(moveX) > 0.05
+          
+          // Permitimos cierta variación en Y, pero no un movimiento completamente vertical
+          const noExcessiveVertical = Math.abs(moveY) < 0.15
 
-          if (nearMouth && forwardOrDown && notHorizontal) {
+          if (nearMouth && movedInX && noExcessiveVertical) {
             triggerRecognition('GRACIAS', 'Gracias')
             recognized = true
+          }
+        }
+
+        // --- SÍ ---
+        if (canDetect && !recognized) {
+          const checkSi = (historyBuf) => {
+            if (historyBuf.length < 8) return false;
+
+            // 1) Forma de la mano: Puño cerrado (la mayoría del tiempo)
+            let closedFrames = 0;
+            for (const frame of historyBuf) {
+              if (isFist(frame.lms)) closedFrames++;
+            }
+            if (closedFrames < historyBuf.length * 0.6) return false;
+
+            // 2) Movimiento: "asiente" (arriba y abajo).
+            // Usamos el nudillo del dedo índice para capturar la flexión de la muñeca o el movimiento del brazo.
+            let minY = 1, maxY = 0;
+            let minX = 1, maxX = 0;
+            for (const frame of historyBuf) {
+              const knuckle = frame.lms[5];
+              if (knuckle.y < minY) minY = knuckle.y;
+              if (knuckle.y > maxY) maxY = knuckle.y;
+              if (knuckle.x < minX) minX = knuckle.x;
+              if (knuckle.x > maxX) maxX = knuckle.x;
+            }
+            
+            const rangeY = maxY - minY;
+            const rangeX = maxX - minX;
+
+            // Movimiento vertical notable (el "asentimiento")
+            const hasVerticalNod = rangeY > 0.04;
+            // Predominantemente vertical comparado con el horizontal
+            const predominantlyVertical = rangeY > rangeX * 1.5;
+
+            // Posición: Debe estar más abajo del hombro (o la cara)
+            // historyBuf[0].y es coordenada normalizada. > 0.2 suele ser debajo del rostro.
+            const belowFace = historyBuf[0].y > 0.2; 
+
+            return hasVerticalNod && predominantlyVertical && belowFace;
+          };
+
+          // Puede ser con cualquiera de las dos manos
+          if (checkSi(poseHistoryRightRef.current) || checkSi(poseHistoryLeftRef.current)) {
+            triggerRecognition('SÍ', 'Sí');
+            recognized = true;
           }
         }
 
         // --- POR FAVOR ---
         if (canDetect && !recognized && hasPose) {
           const checkPorFavor = (historyBuf) => {
-            if (historyBuf.length < 10) return false
+            if (historyBuf.length < 6) return false
             const first = historyBuf[0]
             const last = historyBuf[historyBuf.length - 1]
             
-            const shoulderLeft = results.poseLandmarks[11]
-            const shoulderRight = results.poseLandmarks[12]
-            const chestX = (shoulderLeft.x + shoulderRight.x) / 2
-            const chestY = (shoulderLeft.y + shoulderRight.y) / 2 + 0.1
+            // Definir la línea horizontal que separa el rostro del pecho
+            let boundaryY = 0.5; // Por defecto mitad de pantalla
+            if (results.faceLandmarks && results.faceLandmarks[152]) {
+              // El punto 152 es la base de la barbilla
+              boundaryY = results.faceLandmarks[152].y;
+            } else if (results.poseLandmarks && results.poseLandmarks[11] && results.poseLandmarks[12]) {
+              // Si no hay rostro, usamos la altura de los hombros
+              boundaryY = Math.min(results.poseLandmarks[11].y, results.poseLandmarks[12].y) - 0.05;
+            }
 
-            const nearChest = Math.abs(first.x - chestX) < 0.3 && Math.abs(first.y - chestY) < 0.3
-            const openHand = isHandOpen(last.lms)
-            const isCircle = isCircularMovement(historyBuf)
+            // Para que sea "Por favor", el movimiento debe EMPEZAR y MANTENERSE debajo del rostro.
+            // Esto evita que se confunda con "Gracias" o "Tú", los cuales inician en la cara.
+            const isBelowLine = first.y > boundaryY && last.y > boundaryY;
+            
+            // Movimiento circular
+            const isCircle = isCircularMovement(historyBuf);
 
-            return nearChest && openHand && isCircle
+            // Evitar confundir con "Hola" (que es un barrido horizontal grande)
+            const notHugeSweep = Math.abs(last.x - first.x) < 0.12;
+
+            return isBelowLine && isCircle && notHugeSweep;
           }
 
           if (checkPorFavor(poseHistoryRightRef.current) || checkPorFavor(poseHistoryLeftRef.current)) {
@@ -323,7 +442,7 @@ export default function InterpretScreen({ onBack, onHome }) {
         }
 
         // --- HOLA ---
-        if (canDetect && !recognized && poseHistoryLeftRef.current.length >= 10) {
+        if (canDetect && !recognized && poseHistoryLeftRef.current.length >= 6) {
           const buf = poseHistoryLeftRef.current
           const first = buf[0]
           const last = buf[buf.length - 1]
@@ -332,9 +451,13 @@ export default function InterpretScreen({ onBack, onHome }) {
           const moveY = last.y - first.y
 
           const isHorizontal = Math.abs(moveX) > Math.abs(moveY) * 1.5
-          const bigMove = Math.abs(moveX) > 0.08
+          
+          // Movimiento de derecha a izquierda:
+          // Como la cámara está en modo espejo (scaleX(-1)), cuando el usuario mueve su mano
+          // desde su derecha hacia su izquierda, en la pantalla la coordenada X aumenta.
+          const movingRightToLeft = moveX > 0.06
 
-          if (isHorizontal && bigMove && Math.abs(moveY) < 0.15) {
+          if (isHorizontal && movingRightToLeft && Math.abs(moveY) < 0.15) {
             triggerRecognition('HOLA', 'Hola')
             recognized = true
           }
