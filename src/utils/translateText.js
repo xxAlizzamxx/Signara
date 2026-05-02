@@ -20,11 +20,11 @@ const STOPWORDS = new Set([
 // Order matters for ties: longer / more-specific phrases first.
 const PHRASE_MAP = [
   { match: /^(necesito|necesita|necesitamos)\s+ayuda\b/, signs: ['YO','NECESITAR','AYUDA'] },
-  { match: /^tengo\s+sed\b/,                            signs: ['YO','NECESITAR','AGUA'] },
+  { match: /^tengo\s+sed\b/,                            signs: ['TENGO_SED'] },
   { match: /^tengo\s+hambre\b/,                         signs: ['YO','NECESITAR','COMIDA'] },
   { match: /^estoy\s+bien\b/,                           signs: ['YO','BIEN'] },
   { match: /^estoy\s+mal\b/,                            signs: ['YO','MAL'] },
-  { match: /^te\s+amo\b/,                               signs: ['YO','AMOR','TU'] },
+  { match: /^te\s+amo\b/,                               signs: ['TE_AMO'] },
   { match: /^me\s+llamo\b/,                             signs: ['YO','NOMBRE'] },
   { match: /^como\s+estas\b/,                           signs: ['COMO_ESTAS'] },
   { match: /^por\s+favor\b/,                            signs: ['POR_FAVOR'] },

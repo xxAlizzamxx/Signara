@@ -1,10 +1,15 @@
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import Logo from './Logo.jsx'
 import AvatarPlayer from './AvatarPlayer.jsx'
 import TextInputPanel from './TextInputPanel.jsx'
 import SignChips from './SignChips.jsx'
 import { translateText } from '../utils/translateText.js'
-import { getSignSrc, normalizeSign } from '../utils/signMap.js'
+import {
+  getCurrentAvatar,
+  getSignSrc,
+  normalizeSign,
+  setCurrentAvatar
+} from '../utils/signMap.js'
 
 /**
  * TranslationScreen
@@ -15,10 +20,13 @@ import { getSignSrc, normalizeSign } from '../utils/signMap.js'
  *     interim word -> avatarRef.queue(word) (instant)
  *     final phrase -> translateText() polish + diff-queue any missing signs
  *
- * Includes a global "Limpiar" button that resets:
+ * Includes a global "Limpiar" button (header) that resets:
  *   - avatar (clear queue, stop video, hide both buffers)
  *   - voice  (stop mic, clear input, reset word tracker)
  *   - state  (chips, original text, active sign, busy, liveMode)
+ *
+ * The avatar character itself can be swapped via the "Personalizar" button
+ * rendered below the avatar by <AvatarPlayer />.
  */
 export default function TranslationScreen({ initialMode = 'text', onBack, onHome }) {
   const [originalText, setOriginalText] = useState('')
@@ -26,10 +34,17 @@ export default function TranslationScreen({ initialMode = 'text', onBack, onHome
   const [activeSign, setActiveSign] = useState(null)
   const [busy, setBusy] = useState(false)
   const [liveMode, setLiveMode] = useState(false)
+  const [avatarId, setAvatarId] = useState(getCurrentAvatar().id)
 
   const avatarRef = useRef(null)
   const inputRef = useRef(null)
   const liveQueuedRef = useRef([])
+
+  // Keep the module-level "active avatar" in sync with React state so that
+  // getSignSrc() resolves to the right folder for both typed and live flows.
+  useEffect(() => {
+    setCurrentAvatar(avatarId)
+  }, [avatarId])
 
   // --- Reset helpers --------------------------------------------------------
   const resetVoice = useCallback(() => {
@@ -58,6 +73,14 @@ export default function TranslationScreen({ initialMode = 'text', onBack, onHome
       window.speechSynthesis.cancel()
     }
   }, [resetVoice, resetAvatar, resetState])
+
+  const handleAvatarChange = useCallback((id) => {
+    console.log('[TranslationScreen] avatar selected:', id)
+    setCurrentAvatar(id)
+    setAvatarId(id)
+    // Wipe any in-flight playback so we don't half-show old-avatar clips.
+    if (avatarRef.current) avatarRef.current.clear()
+  }, [])
 
   // --- TYPED path -----------------------------------------------------------
   const handleSubmit = useCallback(async (text) => {
@@ -161,6 +184,8 @@ export default function TranslationScreen({ initialMode = 'text', onBack, onHome
       <div className="flex-1 flex items-center justify-center my-6 animate-fade-up">
         <AvatarPlayer
           ref={avatarRef}
+          avatarId={avatarId}
+          onAvatarChange={handleAvatarChange}
           onSign={setActiveSign}
           onFinish={() => setActiveSign(null)}
         />
