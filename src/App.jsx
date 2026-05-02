@@ -3,6 +3,7 @@ import LandingScreen from './components/LandingScreen.jsx'
 import ModeSelection from './components/ModeSelection.jsx'
 import TranslationScreen from './components/TranslationScreen.jsx'
 import InterpretScreen from './components/InterpretScreen.jsx'
+import { setCurrentAvatar } from './utils/signMap.js'
 
 /**
  * App
@@ -11,42 +12,47 @@ import InterpretScreen from './components/InterpretScreen.jsx'
  *   landing  -> mode  -> translate
  *                     -> interpret
  *
- * 'translate'  : entrada texto/voz -> avatar de señas. Incluye un sub-modo
- *                interno para personalizar el avatar (avatar / hombre / mujer).
- * 'interpret'  : cámara -> reconocimiento de señas -> texto / audio
+ * 'translate'  : entrada texto/voz -> avatar de senas. El avatar se elige
+ *                desde un modal en TranslationScreen (Alex / Anuar / Grace).
+ * 'interpret'  : camara -> reconocimiento de senas -> texto / audio
  *
  * El avatar elegido se persiste en localStorage. App lo carga al iniciar y
- * lo recibe de vuelta vía onAvatarChange cuando el usuario lo cambia desde
+ * lo recibe de vuelta via onAvatarChange cuando el usuario lo cambia desde
  * dentro de Traducir.
  */
 
-const AVATAR_KEY = 'signara:avatarChoice'
+const AVATAR_KEY = 'signara:avatarId'
+const VALID_IDS = ['alex', 'anuar', 'grace']
 
 function readStoredAvatar() {
   try {
     const v = window.localStorage.getItem(AVATAR_KEY)
-    if (v === 'avatar' || v === 'hombre' || v === 'mujer') return v
+    if (VALID_IDS.includes(v)) return v
   } catch (_) {}
-  return 'avatar'
+  return 'alex'
 }
 
-function saveStoredAvatar(choice) {
+function saveStoredAvatar(id) {
   try {
-    window.localStorage.setItem(AVATAR_KEY, choice)
+    window.localStorage.setItem(AVATAR_KEY, id)
   } catch (_) {}
 }
 
 export default function App() {
   const [screen, setScreen] = useState('landing')
-  const [avatarChoice, setAvatarChoice] = useState('avatar')
+  const [avatarId, setAvatarId] = useState('alex')
 
   useEffect(() => {
-    setAvatarChoice(readStoredAvatar())
+    const stored = readStoredAvatar()
+    setAvatarId(stored)
+    setCurrentAvatar(stored)
   }, [])
 
-  const handleAvatarChange = (choice) => {
-    setAvatarChoice(choice)
-    saveStoredAvatar(choice)
+  const handleAvatarChange = (id) => {
+    if (!VALID_IDS.includes(id)) return
+    setAvatarId(id)
+    setCurrentAvatar(id)
+    saveStoredAvatar(id)
   }
 
   return (
@@ -54,4 +60,37 @@ export default function App() {
       {/* Decorative blurred orbs */}
       <div className="pointer-events-none absolute -top-32 -left-32 w-[480px] h-[480px] rounded-full bg-signara-sky/40 blur-3xl" />
       <div className="pointer-events-none absolute -bottom-40 -right-32 w-[520px] h-[520px] rounded-full bg-signara-lilac/40 blur-3xl" />
-  
+      <div className="pointer-events-none absolute top-1/3 right-1/4 w-[300px] h-[300px] rounded-full bg-signara-purple/30 blur-3xl" />
+
+      <div className="relative z-10">
+        {screen === 'landing' && (
+          <LandingScreen onStart={() => setScreen('mode')} />
+        )}
+
+        {screen === 'mode' && (
+          <ModeSelection
+            onBack={() => setScreen('landing')}
+            onSelect={(m) => setScreen(m)}
+          />
+        )}
+
+        {screen === 'translate' && (
+          <TranslationScreen
+            initialMode="text"
+            avatarId={avatarId}
+            onAvatarChange={handleAvatarChange}
+            onBack={() => setScreen('mode')}
+            onHome={() => setScreen('landing')}
+          />
+        )}
+
+        {screen === 'interpret' && (
+          <InterpretScreen
+            onBack={() => setScreen('mode')}
+            onHome={() => setScreen('landing')}
+          />
+        )}
+      </div>
+    </div>
+  )
+}

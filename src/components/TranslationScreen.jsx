@@ -3,7 +3,6 @@ import Logo from './Logo.jsx'
 import AvatarPlayer from './AvatarPlayer.jsx'
 import TextInputPanel from './TextInputPanel.jsx'
 import SignChips from './SignChips.jsx'
-import PersonalizeScreen from './PersonalizeScreen.jsx'
 import { translateText } from '../utils/translateText.js'
 import {
   getCurrentAvatar,
@@ -31,7 +30,7 @@ import {
  */
 export default function TranslationScreen({
   initialMode = 'text',
-  avatarChoice: initialAvatarChoice = 'avatar',
+  avatarId: initialAvatarId,
   onAvatarChange,
   onBack,
   onHome
@@ -41,12 +40,7 @@ export default function TranslationScreen({
   const [activeSign, setActiveSign] = useState(null)
   const [busy, setBusy] = useState(false)
   const [liveMode, setLiveMode] = useState(false)
-<<<<<<< HEAD
-  const [avatarId, setAvatarId] = useState(getCurrentAvatar().id)
-=======
-  const [avatarChoice, setAvatarChoice] = useState(initialAvatarChoice)
-  const [showPersonalize, setShowPersonalize] = useState(false)
->>>>>>> 509c165b32aa8eb723ea41f159e12bcb5485fe9e
+  const [avatarId, setAvatarId] = useState(initialAvatarId || getCurrentAvatar().id)
 
   const avatarRef = useRef(null)
   const inputRef = useRef(null)
@@ -55,6 +49,14 @@ export default function TranslationScreen({
   // in real time (p.ej. "tengo sed" -> TENGO_SED, "por favor" -> POR_FAVOR,
   // "te amo" -> TE_AMO, "como estas" -> COMO_ESTAS).
   const pendingWordRef = useRef('')
+
+  // Sync the prop-driven avatar (from App's localStorage) into local state.
+  useEffect(() => {
+    if (initialAvatarId && initialAvatarId !== avatarId) {
+      setAvatarId(initialAvatarId)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialAvatarId])
 
   // Keep the module-level "active avatar" in sync with React state so that
   // getSignSrc() resolves to the right folder for both typed and live flows.
@@ -95,9 +97,9 @@ export default function TranslationScreen({
     console.log('[TranslationScreen] avatar selected:', id)
     setCurrentAvatar(id)
     setAvatarId(id)
-    // Wipe any in-flight playback so we don't half-show old-avatar clips.
     if (avatarRef.current) avatarRef.current.clear()
-  }, [])
+    if (onAvatarChange) onAvatarChange(id)
+  }, [onAvatarChange])
 
   // --- TYPED path -----------------------------------------------------------
   const handleSubmit = useCallback(async (text) => {
@@ -159,8 +161,6 @@ export default function TranslationScreen({
     if (getSignSrc(singleSign)) {
       console.log('LIVE WORD single:', singleSign)
       queueSign(singleSign)
-      // La palabra actual también podría iniciar un compuesto, pero como ya
-      // se reprodujo dejamos el buffer limpio para evitar duplicaciones.
       pendingWordRef.current = ''
       return
     }
@@ -199,28 +199,6 @@ export default function TranslationScreen({
     else handleSubmit(text)
   }, [liveMode, handleVoiceFinal, handleSubmit])
 
-  // --- Personalizar (vista interna del flujo Traducir) --------------------
-  const handleOpenPersonalize = useCallback(() => {
-    setShowPersonalize(true)
-  }, [])
-
-  const handleSavePersonalize = useCallback((choice) => {
-    setAvatarChoice(choice)
-    setShowPersonalize(false)
-    if (onAvatarChange) onAvatarChange(choice)
-  }, [onAvatarChange])
-
-  if (showPersonalize) {
-    return (
-      <PersonalizeScreen
-        initialChoice={avatarChoice}
-        onBack={() => setShowPersonalize(false)}
-        onHome={onHome}
-        onSave={handleSavePersonalize}
-      />
-    )
-  }
-
   let activeIndex = -1
   if (activeSign) {
     for (let i = signs.length - 1; i >= 0; i--) {
@@ -240,7 +218,6 @@ export default function TranslationScreen({
 
         <div className="flex items-center gap-2">
           <ResetButton onClick={handleReset} />
-<<<<<<< HEAD
           <button onClick={onHome} className="flex items-center gap-2 group" title="Inicio">
             <span className="hidden sm:block text-xl font-extrabold gradient-text bg-white px-3 py-1 rounded-full shadow-soft">Signara</span>
             <span className="flex h-10 w-10 items-center justify-center rounded-2xl bg-white/95 shadow-soft group-hover:shadow-glow transition">
@@ -311,6 +288,3 @@ function ResetButton({ onClick }) {
     </button>
   )
 }
-=======
-          <button onClick={onHome} className="flex item
->>>>>>> 509c165b32aa8eb723ea41f159e12bcb5485fe9e
