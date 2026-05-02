@@ -3,6 +3,7 @@ import Logo from './Logo.jsx'
 import AvatarPlayer from './AvatarPlayer.jsx'
 import TextInputPanel from './TextInputPanel.jsx'
 import SignChips from './SignChips.jsx'
+import PersonalizeScreen from './PersonalizeScreen.jsx'
 import { translateText } from '../utils/translateText.js'
 import {
   getCurrentAvatar,
@@ -28,17 +29,32 @@ import {
  * The avatar character itself can be swapped via the "Personalizar" button
  * rendered below the avatar by <AvatarPlayer />.
  */
-export default function TranslationScreen({ initialMode = 'text', onBack, onHome }) {
+export default function TranslationScreen({
+  initialMode = 'text',
+  avatarChoice: initialAvatarChoice = 'avatar',
+  onAvatarChange,
+  onBack,
+  onHome
+}) {
   const [originalText, setOriginalText] = useState('')
   const [signs, setSigns] = useState([])
   const [activeSign, setActiveSign] = useState(null)
   const [busy, setBusy] = useState(false)
   const [liveMode, setLiveMode] = useState(false)
+<<<<<<< HEAD
   const [avatarId, setAvatarId] = useState(getCurrentAvatar().id)
+=======
+  const [avatarChoice, setAvatarChoice] = useState(initialAvatarChoice)
+  const [showPersonalize, setShowPersonalize] = useState(false)
+>>>>>>> 509c165b32aa8eb723ea41f159e12bcb5485fe9e
 
   const avatarRef = useRef(null)
   const inputRef = useRef(null)
   const liveQueuedRef = useRef([])
+  // Buffer for the previous live word so we can detect 2-word compound signs
+  // in real time (p.ej. "tengo sed" -> TENGO_SED, "por favor" -> POR_FAVOR,
+  // "te amo" -> TE_AMO, "como estas" -> COMO_ESTAS).
+  const pendingWordRef = useRef('')
 
   // Keep the module-level "active avatar" in sync with React state so that
   // getSignSrc() resolves to the right folder for both typed and live flows.
@@ -62,6 +78,7 @@ export default function TranslationScreen({ initialMode = 'text', onBack, onHome
     setBusy(false)
     setLiveMode(false)
     liveQueuedRef.current = []
+    pendingWordRef.current = ''
   }, [])
 
   const handleReset = useCallback(() => {
@@ -88,6 +105,7 @@ export default function TranslationScreen({ initialMode = 'text', onBack, onHome
     setOriginalText(text)
     setLiveMode(false)
     liveQueuedRef.current = []
+    pendingWordRef.current = ''
     try {
       const result = await translateText(text)
       console.log('[TranslationScreen] translateText ->', result)
@@ -102,17 +120,54 @@ export default function TranslationScreen({ initialMode = 'text', onBack, onHome
   }, [])
 
   // --- LIVE VOICE path ------------------------------------------------------
+  // Para frases compuestas mantenemos pendingWordRef. Cuando llega una nueva
+  // palabra:
+  //   1. Probamos pendingWord + nueva  (ej: "tengo" + "sed" -> TENGO_SED).
+  //      Si hay video, lo encolamos y limpiamos pending.
+  //   2. Si no hay compuesto, probamos la palabra sola (ej: "hola" -> HOLA,
+  //      "gracias" -> GRACIAS).
+  //   3. Si no hay nada, guardamos la palabra como pending por si forma
+  //      un compuesto con la siguiente.
   const handleLiveWord = useCallback((rawWord) => {
-    const sign = normalizeSign(rawWord)
-    if (!sign) return
-    setLiveMode(true)
-    setSigns((prev) => [...prev, sign])
-    setOriginalText((prev) => (prev ? prev + ' ' : '') + rawWord)
+    const cleaned = String(rawWord || '').trim()
+    if (!cleaned) return
 
-    if (getSignSrc(sign) && avatarRef.current) {
-      avatarRef.current.queue(sign)
-      liveQueuedRef.current.push(sign)
+    setLiveMode(true)
+    setOriginalText((prev) => (prev ? prev + ' ' : '') + cleaned)
+
+    const queueSign = (sign) => {
+      setSigns((prev) => [...prev, sign])
+      if (avatarRef.current) {
+        avatarRef.current.queue(sign)
+        liveQueuedRef.current.push(sign)
+      }
     }
+
+    // 1) Intento de seña compuesta con la palabra pendiente.
+    if (pendingWordRef.current) {
+      const compoundSign = normalizeSign(pendingWordRef.current + ' ' + cleaned)
+      if (getSignSrc(compoundSign)) {
+        console.log('LIVE WORD compound:', compoundSign)
+        queueSign(compoundSign)
+        pendingWordRef.current = ''
+        return
+      }
+    }
+
+    // 2) Intento de seña individual.
+    const singleSign = normalizeSign(cleaned)
+    if (getSignSrc(singleSign)) {
+      console.log('LIVE WORD single:', singleSign)
+      queueSign(singleSign)
+      // La palabra actual también podría iniciar un compuesto, pero como ya
+      // se reprodujo dejamos el buffer limpio para evitar duplicaciones.
+      pendingWordRef.current = ''
+      return
+    }
+
+    // 3) Sin coincidencia: guardamos la palabra por si forma un compuesto
+    //    con la siguiente (ej: "tengo" -> espera "sed").
+    pendingWordRef.current = cleaned
   }, [])
 
   const handleVoiceFinal = useCallback(async (text) => {
@@ -135,6 +190,7 @@ export default function TranslationScreen({ initialMode = 'text', onBack, onHome
       console.warn('polish translateText failed:', e)
     } finally {
       liveQueuedRef.current = []
+      pendingWordRef.current = ''
     }
   }, [])
 
@@ -142,6 +198,28 @@ export default function TranslationScreen({ initialMode = 'text', onBack, onHome
     if (liveMode) handleVoiceFinal(text)
     else handleSubmit(text)
   }, [liveMode, handleVoiceFinal, handleSubmit])
+
+  // --- Personalizar (vista interna del flujo Traducir) --------------------
+  const handleOpenPersonalize = useCallback(() => {
+    setShowPersonalize(true)
+  }, [])
+
+  const handleSavePersonalize = useCallback((choice) => {
+    setAvatarChoice(choice)
+    setShowPersonalize(false)
+    if (onAvatarChange) onAvatarChange(choice)
+  }, [onAvatarChange])
+
+  if (showPersonalize) {
+    return (
+      <PersonalizeScreen
+        initialChoice={avatarChoice}
+        onBack={() => setShowPersonalize(false)}
+        onHome={onHome}
+        onSave={handleSavePersonalize}
+      />
+    )
+  }
 
   let activeIndex = -1
   if (activeSign) {
@@ -162,6 +240,7 @@ export default function TranslationScreen({ initialMode = 'text', onBack, onHome
 
         <div className="flex items-center gap-2">
           <ResetButton onClick={handleReset} />
+<<<<<<< HEAD
           <button onClick={onHome} className="flex items-center gap-2 group" title="Inicio">
             <span className="hidden sm:block text-xl font-extrabold gradient-text bg-white px-3 py-1 rounded-full shadow-soft">Signara</span>
             <span className="flex h-10 w-10 items-center justify-center rounded-2xl bg-white/95 shadow-soft group-hover:shadow-glow transition">
@@ -232,3 +311,6 @@ function ResetButton({ onClick }) {
     </button>
   )
 }
+=======
+          <button onClick={onHome} className="flex item
+>>>>>>> 509c165b32aa8eb723ea41f159e12bcb5485fe9e

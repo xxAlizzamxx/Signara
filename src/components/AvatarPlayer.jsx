@@ -23,8 +23,18 @@ import { AVATARS, getSignSrc, normalizeSign } from '../utils/signMap.js'
  * Public API (forwardRef):
  *   queue(sign), replace(signs), clear(), isPlaying(), queueLength()
  */
+const AVATAR_SRC_MAP = {
+  avatar: '/avatar.png',
+  hombre: '/avatar_hombre.png',
+  mujer: '/avatar_mujer.png'
+}
+
 const AvatarPlayer = forwardRef(function AvatarPlayer(
+<<<<<<< HEAD
   { signs = [], avatarId = 'alex', onAvatarChange, onSign, onFinish },
+=======
+  { signs = [], onSign, onFinish, avatarChoice = 'avatar', onPersonalize },
+>>>>>>> 509c165b32aa8eb723ea41f159e12bcb5485fe9e
   ref
 ) {
   // Two persistent <video> elements
@@ -286,10 +296,21 @@ const AvatarPlayer = forwardRef(function AvatarPlayer(
           style={{ opacity: 0 }}
         />
 
+<<<<<<< HEAD
         {/* Idle / fallback avatar - underneath the videos. Hidden once we've
             successfully crossfaded any clip in. Uses the currently selected
             avatar's image so the user sees who will sign for them. */}
         {!hasShownAny && <FallbackAvatar avatar={avatar} active={isPlaying} />}
+=======
+        {/* Fallback avatar - underneath the videos. Hidden once we've
+            successfully crossfaded any clip in. */}
+        {!hasShownAny && (
+          <FallbackAvatar
+            active={isPlaying}
+            src={AVATAR_SRC_MAP[avatarChoice] || AVATAR_SRC_MAP.avatar}
+          />
+        )}
+>>>>>>> 509c165b32aa8eb723ea41f159e12bcb5485fe9e
 
         {/* Sign label */}
         {currentLabel && (
@@ -322,6 +343,7 @@ const AvatarPlayer = forwardRef(function AvatarPlayer(
 
       <div className="mt-5 flex items-center justify-center gap-3">
         <button
+<<<<<<< HEAD
           className="btn-ghost py-2 px-5 text-sm inline-flex items-center gap-2"
           onClick={() => setPickerOpen(true)}
           title="Personalizar avatar"
@@ -329,6 +351,15 @@ const AvatarPlayer = forwardRef(function AvatarPlayer(
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <circle cx="12" cy="8" r="4" />
             <path d="M4 21v-1a8 8 0 0 1 16 0v1" />
+=======
+          type="button"
+          className="btn-ghost py-2 px-5 text-sm inline-flex items-center gap-2"
+          onClick={() => { if (onPersonalize) onPersonalize() }}
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <circle cx="12" cy="8" r="4" />
+            <path d="M4 21c0-4.4 3.6-8 8-8s8 3.6 8 8" />
+>>>>>>> 509c165b32aa8eb723ea41f159e12bcb5485fe9e
           </svg>
           Personalizar
         </button>
@@ -348,6 +379,7 @@ const AvatarPlayer = forwardRef(function AvatarPlayer(
 
 export default AvatarPlayer
 
+<<<<<<< HEAD
 function FallbackAvatar({ avatar, active }) {
   const [imgFailed, setImgFailed] = useState(false)
   const src = avatar?.image || '/avatar.png'
@@ -359,12 +391,19 @@ function FallbackAvatar({ avatar, active }) {
     setImgFailed(false)
   }, [src])
 
+=======
+function FallbackAvatar({ active, src = '/avatar.png' }) {
+  const [imgFailed, setImgFailed] = useState(false)
+  // Reset failure state if the src changes (e.g. user picks a new avatar).
+  useEffect(() => { setImgFailed(false) }, [src])
+>>>>>>> 509c165b32aa8eb723ea41f159e12bcb5485fe9e
   return (
     <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
       <div className="relative flex items-center justify-center">
         {!imgFailed ? (
           <img
             src={src}
+<<<<<<< HEAD
             alt={alt}
             onError={() => setImgFailed(true)}
             className={'relative h-72 w-72 sm:h-80 sm:w-80 object-contain drop-shadow-2xl ' + (active ? 'animate-float' : '')}
@@ -468,3 +507,9 @@ function AvatarPickerModal({ avatars, selectedId, onSelect, onClose }) {
     </div>
   )
 }
+=======
+            alt="Avatar Signara"
+            onError={() => setImgFailed(true)}
+            className={'relative h-72 w-72 sm:h-80 sm:w-80 object-contain drop-shadow-2xl ' + (active ? 'animate-float' : '')}
+            d
+>>>>>>> 509c165b32aa8eb723ea41f159e12bcb5485fe9e
