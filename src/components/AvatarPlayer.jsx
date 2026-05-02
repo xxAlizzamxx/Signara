@@ -1,5 +1,5 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react'
-import { getSignSrc, normalizeSign } from '../utils/signMap.js'
+import { AVATARS, getSignSrc, normalizeSign } from '../utils/signMap.js'
 
 /**
  * AvatarPlayer
@@ -14,15 +14,27 @@ import { getSignSrc, normalizeSign } from '../utils/signMap.js'
  *                 active/buffer opacities. After the swap, the previous
  *                 active element becomes the new buffer for the sign after.
  *
- * This eliminates the black frame / flicker the single-<video> approach
- * shows when changing `src`, because the next clip is already decoded by
- * the time we make it visible.
+ * The character itself is selected via the `avatarId` prop. Below the video
+ * we render a "Personalizar" button that opens a small modal listing the
+ * available avatars (Alex / Anuar / Grace). Picking one fires
+ * `onAvatarChange(id)` so the parent can update its state and the module
+ * level signMap pointer.
  *
  * Public API (forwardRef):
  *   queue(sign), replace(signs), clear(), isPlaying(), queueLength()
  */
+const AVATAR_SRC_MAP = {
+  avatar: '/avatar.png',
+  hombre: '/avatar_hombre.png',
+  mujer: '/avatar_mujer.png'
+}
+
 const AvatarPlayer = forwardRef(function AvatarPlayer(
-  { signs = [], onSign, onFinish },
+<<<<<<< HEAD
+  { signs = [], avatarId = 'alex', onAvatarChange, onSign, onFinish },
+=======
+  { signs = [], onSign, onFinish, avatarChoice = 'avatar', onPersonalize },
+>>>>>>> 509c165b32aa8eb723ea41f159e12bcb5485fe9e
   ref
 ) {
   // Two persistent <video> elements
@@ -44,6 +56,9 @@ const AvatarPlayer = forwardRef(function AvatarPlayer(
   const [isPlaying, setIsPlaying] = useState(false)
   const [queueLen, setQueueLen] = useState(0)
   const [hasShownAny, setHasShownAny] = useState(false)
+  const [pickerOpen, setPickerOpen] = useState(false)
+
+  const avatar = AVATARS.find((a) => a.id === avatarId) || AVATARS[0]
 
   // -------- helpers --------------------------------------------------------
   function getActiveVideo() {
@@ -236,6 +251,13 @@ const AvatarPlayer = forwardRef(function AvatarPlayer(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [signs])
 
+  // When the active avatar changes, reset playback so the next clip comes
+  // from the new folder and the idle frame shows the new character.
+  useEffect(() => {
+    clearQueue()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [avatarId])
+
   // On unmount: clean listeners
   useEffect(() => {
     return () => {
@@ -243,6 +265,11 @@ const AvatarPlayer = forwardRef(function AvatarPlayer(
       clearVideoListeners(videoBRef.current)
     }
   }, [])
+
+  function handleSelectAvatar(id) {
+    if (onAvatarChange) onAvatarChange(id)
+    setPickerOpen(false)
+  }
 
   return (
     <div className="relative w-full">
@@ -269,14 +296,34 @@ const AvatarPlayer = forwardRef(function AvatarPlayer(
           style={{ opacity: 0 }}
         />
 
+<<<<<<< HEAD
+        {/* Idle / fallback avatar - underneath the videos. Hidden once we've
+            successfully crossfaded any clip in. Uses the currently selected
+            avatar's image so the user sees who will sign for them. */}
+        {!hasShownAny && <FallbackAvatar avatar={avatar} active={isPlaying} />}
+=======
         {/* Fallback avatar - underneath the videos. Hidden once we've
             successfully crossfaded any clip in. */}
-        {!hasShownAny && <FallbackAvatar active={isPlaying} />}
+        {!hasShownAny && (
+          <FallbackAvatar
+            active={isPlaying}
+            src={AVATAR_SRC_MAP[avatarChoice] || AVATAR_SRC_MAP.avatar}
+          />
+        )}
+>>>>>>> 509c165b32aa8eb723ea41f159e12bcb5485fe9e
 
         {/* Sign label */}
         {currentLabel && (
           <div className="absolute bottom-4 left-1/2 -translate-x-1/2 px-5 py-2 rounded-full bg-white/90 backdrop-blur text-signara-navy font-bold tracking-wide shadow-soft text-sm">
             {normalizeSign(currentLabel).replace(/_/g, ' ')}
+          </div>
+        )}
+
+        {/* Avatar name pill - top center, only visible while idle so it
+            doesn't overlap the active sign label. */}
+        {avatar && !currentLabel && (
+          <div className="absolute top-4 left-1/2 -translate-x-1/2 px-3 py-1 rounded-full bg-white/90 backdrop-blur text-signara-navy text-xs font-bold tracking-wide shadow-soft">
+            {avatar.name}
           </div>
         )}
 
@@ -296,28 +343,68 @@ const AvatarPlayer = forwardRef(function AvatarPlayer(
 
       <div className="mt-5 flex items-center justify-center gap-3">
         <button
-          className="btn-ghost py-2 px-5 text-sm"
-          onClick={clearQueue}
-          disabled={!isPlaying && queueLen === 0}
+<<<<<<< HEAD
+          className="btn-ghost py-2 px-5 text-sm inline-flex items-center gap-2"
+          onClick={() => setPickerOpen(true)}
+          title="Personalizar avatar"
         >
-          Limpiar
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <circle cx="12" cy="8" r="4" />
+            <path d="M4 21v-1a8 8 0 0 1 16 0v1" />
+=======
+          type="button"
+          className="btn-ghost py-2 px-5 text-sm inline-flex items-center gap-2"
+          onClick={() => { if (onPersonalize) onPersonalize() }}
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <circle cx="12" cy="8" r="4" />
+            <path d="M4 21c0-4.4 3.6-8 8-8s8 3.6 8 8" />
+>>>>>>> 509c165b32aa8eb723ea41f159e12bcb5485fe9e
+          </svg>
+          Personalizar
         </button>
       </div>
+
+      {pickerOpen && (
+        <AvatarPickerModal
+          avatars={AVATARS}
+          selectedId={avatar?.id}
+          onSelect={handleSelectAvatar}
+          onClose={() => setPickerOpen(false)}
+        />
+      )}
     </div>
   )
 })
 
 export default AvatarPlayer
 
-function FallbackAvatar({ active }) {
+<<<<<<< HEAD
+function FallbackAvatar({ avatar, active }) {
   const [imgFailed, setImgFailed] = useState(false)
+  const src = avatar?.image || '/avatar.png'
+  const alt = avatar ? `Avatar ${avatar.name}` : 'Avatar Signara'
+
+  // Reset the failed flag whenever the avatar source changes so a successful
+  // image after a failed one re-renders correctly.
+  useEffect(() => {
+    setImgFailed(false)
+  }, [src])
+
+=======
+function FallbackAvatar({ active, src = '/avatar.png' }) {
+  const [imgFailed, setImgFailed] = useState(false)
+  // Reset failure state if the src changes (e.g. user picks a new avatar).
+  useEffect(() => { setImgFailed(false) }, [src])
+>>>>>>> 509c165b32aa8eb723ea41f159e12bcb5485fe9e
   return (
     <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
       <div className="relative flex items-center justify-center">
         {!imgFailed ? (
           <img
-            src="/avatar.png"
-            alt="Avatar Signara"
+            src={src}
+<<<<<<< HEAD
+            alt={alt}
             onError={() => setImgFailed(true)}
             className={'relative h-72 w-72 sm:h-80 sm:w-80 object-contain drop-shadow-2xl ' + (active ? 'animate-float' : '')}
             draggable={false}
@@ -336,3 +423,93 @@ function FallbackAvatar({ active }) {
     </div>
   )
 }
+
+/**
+ * AvatarPickerModal - lightweight modal listing the available avatars.
+ * Tapping one selects it and closes the modal.
+ */
+function AvatarPickerModal({ avatars, selectedId, onSelect, onClose }) {
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center px-4"
+      onClick={onClose}
+    >
+      <div className="absolute inset-0 bg-signara-navy/60 backdrop-blur-sm" />
+      <div
+        className="relative w-full max-w-lg rounded-3xl bg-white shadow-glow p-6 sm:p-8 animate-fade-up"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-start justify-between">
+          <div>
+            <p className="text-[10px] font-bold uppercase tracking-[0.3em] text-signara-purple">Personalizar</p>
+            <h3 className="mt-1 text-2xl font-extrabold text-signara-navy">Elige tu avatar</h3>
+            <p className="mt-1 text-sm text-signara-navy/60">Cambia quién interpreta las señas en pantalla.</p>
+          </div>
+          <button
+            onClick={onClose}
+            className="-mr-1 -mt-1 inline-flex h-8 w-8 items-center justify-center rounded-full text-signara-navy/60 hover:bg-signara-navy/10 hover:text-signara-navy transition"
+            title="Cerrar"
+            aria-label="Cerrar"
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M18 6 6 18M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+
+        <div className="mt-6 grid grid-cols-3 gap-3 sm:gap-4">
+          {avatars.map((a) => {
+            const selected = a.id === selectedId
+            return (
+              <button
+                key={a.id}
+                onClick={() => onSelect(a.id)}
+                className={
+                  'group flex flex-col items-center rounded-2xl p-3 sm:p-4 transition focus:outline-none focus:ring-4 focus:ring-signara-purple/20 ' +
+                  (selected
+                    ? 'bg-signara-lilac/30 ring-2 ring-signara-purple shadow-soft'
+                    : 'bg-signara-lilac/10 hover:bg-signara-lilac/20 ring-1 ring-signara-lilac/40')
+                }
+              >
+                <span className="aspect-square w-full rounded-xl overflow-hidden bg-gradient-to-br from-signara-blue/10 via-signara-purple/10 to-signara-lilac/20 flex items-center justify-center">
+                  <img
+                    src={a.image}
+                    alt={a.name}
+                    className="h-full w-full object-contain"
+                    draggable={false}
+                  />
+                </span>
+                <span className={'mt-3 text-sm font-bold ' + (selected ? 'text-signara-purple' : 'text-signara-navy')}>
+                  {a.name}
+                </span>
+                {selected && (
+                  <span className="mt-1 inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-widest text-signara-purple">
+                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M20 6 9 17l-5-5" />
+                    </svg>
+                    Activo
+                  </span>
+                )}
+              </button>
+            )
+          })}
+        </div>
+
+        <div className="mt-6 flex items-center justify-end">
+          <button
+            onClick={onClose}
+            className="btn-primary py-2.5 px-5 text-sm"
+          >
+            Listo
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+=======
+            alt="Avatar Signara"
+            onError={() => setImgFailed(true)}
+            className={'relative h-72 w-72 sm:h-80 sm:w-80 object-contain drop-shadow-2xl ' + (active ? 'animate-float' : '')}
+            d
+>>>>>>> 509c165b32aa8eb723ea41f159e12bcb5485fe9e
